@@ -1,0 +1,1087 @@
+---
+lang: es
+title: "Proyecto Final"
+author:
+  - name: Miquel Blasco Cantó
+    email: "miblas4@alumni.uv.es"
+toc: true
+draft: false
+code-link: true
+lightbox: 
+  match: auto
+  effect: fade
+  desc-position: left
+  css-class: "lightwidth"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3         
+    toc-title: "Índice"  
+---
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+libs <- c("readxl", "readr", "tidyverse", "tidygeocoder", "sf", "spanishoddata","ggplot2", "ggspatial", "osmdata", "mapSpain", "patchwork","spatstat","sp", "splancs", "leaflet", "rgeoda", "spdep", "tmap", "RColorBrewer")
+installed_libs <- libs %in% rownames(installed.packages())
+if (any(installed_libs == F)) {install.packages(libs[!installed_libs])}
+invisible(lapply(libs, library, character.only = T))
+rm(libs, installed_libs)
+```
+
+# 1. Resumen
+Los accidentes de tráfico en Madrid no se distribuyen de manera aleatoria, sino que tienden a agruparse en el espacio, por lo que existen zonas con una alta concentración en relación a su tráfico. A partir de esta evidencia nuestro objetivo ha sido identificar aquellas áreas críticas en las que el número de accidentes (relativo) es significativamente alto respecto a su entorno, para poner sobre ellas el foco de las políticas públicas de seguridad vial. 
+
+Una vez identificadas las áreas nuestra intención ha sido comprobar si una de las causas del alto número de accidentes para estas zonas es que hay un número significativamente bajo de dispositivos de un determinado sistema de control. Además, se ha podido comprobar si las zonas no críticas están bien dotadas, hecho que sugiere eficacia por parte de estos dispositivos.
+
+La manera de realizar la comprobación ha sido el estudio de la  relación entre accidentes y semáforos/radares dentro de una misma unidad espacial a través de métodos estadísticos, ya que teniamos a nuestro alcance archivos con información georreferenciada sobre estos tipos de sistemas de prevención y seguridad vial.
+
+
+# 2. Introducción
+Una de las prioridades entre las políticas públicas urbanas es la seguridad vial, especialmente en grandes ciudades con alta concentración de tráfico, como es el caso de Madrid. Con tal de mejorar este aspecto, las autoridades públicas toman ciertas medidas intentando reducir el número de accidentes. Entre ellas podemos encontrar los radares de velocidad y los sistemas de foto control.
+
+Por una parte , los sistemas con foto control consisten en la instalación de cámaras de rayos infrarrojos en los semáforos para capturar la matrícula de aquellos vehículos que no cumplan la señal de detención en los pasos de peatones señalizados. Por otra parte, los radares estan diseñados para registrar los excesos de velocidad de los vehículos que se crucen con ellos. La implementación de estos sistemas tiene como objetivo mejorar la seguridad vial de los conductores mediante la reducción de comportamientos peligrosos, ya que estos generan una sensación de vigilancia constante.
+
+La finalidad de este trabajo de investigación es detectar si existen zonas con una concentración de accidentes significativamente diferente a otras. En caso afirmativo , nos enfocaremos en detectar si existen agrupamientos formados por zonas con alto número de accidentes con el objetivo de saber cuales son, y analizaremos la relación que existe con el número de dispositivos de un determinado sistema de seguridad en dichos espacios. Los resultados que obtengamos pueden ser útiles principalmente por dos motivos. Por una parte, para evaluar la eficacia de los dispositivos de seguridad, sirviendo como base para estudios más profundos. Por otra parte, para saber si el número de dispositivos implementados en cada zona es una de las causas de la alta accidentalidad.
+
+Para ello, a través del Portal de datos abiertos del Ayuntamiento de Madrid, hemos obtenido información georreferenciada sobre los radares y los semáforos con sistema de foto control rojo, junto con el conjunto de datos sobre los accidentes de tráfico en Madrid durante 2025. El trabajo se realizará sobre estos datos, y aplicando distintos enfoques, métodos y técnicas de análisis trataremos de contrastar la hipótesis planteada.
+
+# 3. Metodología
+
+## 3.1. Recopilación de datos geoespaciales
+El Portal de datos abiertos del Ayuntamiento de Madrid ofrece la posibilidad de descargar cualquier conjunto de datos disponible en varios formatos.
+
+Para este proyecto, hemos descargado 3 archivos excel con información de los accidentes, radares y semáforos con foto control en Madrid (2025). Cada observación de los 3 data frames incluye información descriptiva y las coordenadas geográficas que localizan los hechos o los objetos.
+
+Además, para el análisis de correlación espacial, hemos obtenido un archivo formato shapefile que contiene los límites administrativos de los diferentes distritos de la ciudad de Madrid.
+
+Por último, contamos con los datos de los puntos de medida de tráfico para lo que llevamos de 2025 (Enero, Febrero, Marzo, Abril). De esta manera, podremos aproximar la intensidad media de tráfico por distrito, lo cual será clave para calcular el número de accidentes, radares o semáforos relativos a la intensidad de tráfico de cada distrito.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Cargamos los datos
+## Accidentes de tráfico en Madrid durante enero, febrero, marzo y abril de 2025
+acc <- read_xlsx("./principales/accidentes25.xlsx")
+
+# Radares
+rad <- read_xlsx("./principales/radares.xlsx")
+
+# Semáforo foto control rojo
+fcr <- read_xlsx("./principales/foto_rojo.xlsx")
+
+# Distritos
+distritos <- st_read("./distritos/DISTRITOS.shp")
+
+## Intensidad de tráfico por distrito y mes (enero-abril 2025)
+## Resumen generado con preparar_trafico.R a partir de los datos brutos (~3 GB)
+trafico_mes <- read_csv("./trafico/trafico_distrito_mes.csv",
+                        col_types = cols(mes = col_character(), distrito = col_character()))
+```
+
+## 3.2. Tranformación a formato sf
+
+### 3.2.1. Identificación de coordenadas NA
+Dada la estructura de los datos, convertirlos en formato sf es una buena opción para facilitar los análisis y representaciones gráficas posteriores. Para ello, empleamos la función st_transform(), aunque si existen coordenadas NA no se ejecutará. Por tanto, el primer paso será identificar las observaciones con coordenadas NA en los conjuntos de datos originales, en caso de que las haya.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Antes de pasar los datos a formato sf miramos si hay observaciones con coordenadas NA
+sum(is.na(acc$coordenada_x_utm))  
+sum(is.na(acc$coordenada_y_utm))
+
+sum(is.na(rad$Latitud))  
+sum(is.na(rad$Longitud))
+
+sum(is.na(fcr$longitud))  
+sum(is.na(fcr$latitud))
+```
+
+En este caso, solo identificamos 22 observaciones con coordenadas NA, todas correspondientes al conjunto de datos de los accidentes. Entonces, para poder aplicar la función st_transform(), eliminaremos estas observaciones del dataset original y las analizaremos a parte.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Eliminamos dichas observaciones del conjunto para analizarlas aparte
+acc_full <- acc %>%  filter(!is.na(coordenada_x_utm) | !is.na(coordenada_y_utm))
+```
+
+### 3.2.2. Geocodificación
+Una opción para seguir adelante con el estudio sería pensar que al ser un número pequeño de observaciones bastaría con eliminarlas. Ahora bien, siempre que exista la posibilidad, será mejor opción intentar recuperar la información. En este caso, además de las coordenadas, la base de datos incluye información geográfica sobre el distrito, la calle y el número dónde ocurrió el accidente. Entonces, a través de la geocodificación trataremos de convertir las direcciones postales en coordenadas geográficas.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Las filtramos y les asignamos unas coordenadas con geocodificación
+na <- acc %>% filter(is.na(coordenada_x_utm) |
+                         is.na(coordenada_y_utm)) %>% 
+  mutate(info = paste(localizacion," Madrid", sep = ","))
+
+na_geocoded <- geocode(na, address = info, method = "arcgis")
+
+na_ok <- na_geocoded %>% mutate(coordenada_x_utm = long, coordenada_y_utm = lat) %>% filter(!is.na(long) | !is.na(lat)) %>% select(!c(lat,long,info))
+```
+
+### 3.2.3 Ejecución de la transformación
+En este punto del análisis disponemos del dataframe original de accidentes sin las observaciones NA excluidas y un dataframe auxiliar con esta mismas observaciones ya geocodificadas, a parte de los datos originales sin NA de radares y semaforos foto control. Estas condiciones nos permiten transformar los datos a formato sf. Finalmente, unimos las observaciones de los dos conjuntos sf relativos a accidentes. Como resultado obtenemos los tres conjuntos de datos que fundamentan nuestra investigación en fomrato sf.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Tranformamos todos los conjuntos a formato sf
+acc_full$coordenada_x_utm <- as.numeric(acc_full$coordenada_x_utm)
+acc_full$coordenada_y_utm <- as.numeric(acc_full$coordenada_y_utm)
+acc_full_sf <- st_as_sf(acc_full, coords = c("coordenada_x_utm", "coordenada_y_utm"), crs = 25830)
+acc_full_sf <- st_transform(acc_full_sf, crs = 4326)
+
+na_ok$coordenada_x_utm <- as.numeric(na_ok$coordenada_x_utm)
+na_ok$coordenada_y_utm <- as.numeric(na_ok$coordenada_y_utm)
+na_ok_sf <- st_as_sf(na_ok, coords = c("coordenada_x_utm", "coordenada_y_utm"), crs = 4326)   # (4326 ya que al geodificar tenemos lat y long)
+
+rad_sf <- st_as_sf(rad, coords = c("Longitud", "Latitud"), crs = 4326)
+
+fcr_sf <- st_as_sf(fcr, coords = c("longitud", "latitud"), crs = 4326)
+
+# Unimos las observaciones de los dos conjuntos sf de accidentes
+acc_sf <- rbind(acc_full_sf, na_ok_sf)
+```
+
+## 3.3. Representaciones gráficas iniciales
+Una vez realizada la geoocdificación, representar gráficamente las coordenadas obtenidas es clave para identificar posibles errores como puntos mal asignados (fuera del área esperada).
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Gráfico de accidentes
+gacc <- ggplot() +
+  annotation_map_tile(type = "osm") +
+  geom_sf(data = acc_sf, aes(color = "Accidentes"), size = 0.01, alpha = 0.7) +
+  scale_color_manual(values = "red") +
+  labs(title = "Accidentes", color = NULL) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+
+# Gráfico de radares
+grad <- ggplot() +
+  annotation_map_tile(type = "osm") +
+  geom_sf(data = rad_sf, aes(color = "Radares"), size = 0.5, alpha = 0.8) +
+  scale_color_manual(values = "blue") +
+  labs(title = "Radares", color = NULL) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+
+# Gráfico de foto-control
+gfcr <- ggplot() +
+  annotation_map_tile(type = "osm") +
+  geom_sf(data = fcr_sf, aes(color = "Foto-control"), size = 0.5, alpha = 0.8) +
+  scale_color_manual(values = "darkgreen") +
+  labs(title = "Semáforos Foto Control", color = NULL) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+Si comprobamos que no hay observaciones fuera del área esperada, no será necesario realizar ninguna intersección y podremos seguir con nuestro análisis.
+
+## 3.4. Análisis de la distribución geográfica de los puntos
+Uno de los aspectos más interesantes a estudiar a lo largo del EDA es la distribución geográfica aparente de los datos. En el contexto de los datos geoespaciales, los mapas de calor son una opción interesante a la hora de conocer la distribución geográfica de los datos. Además, de esta manera podremos intuir si existen zonas con mayor densidad de accidentes que otras, y si estas se concentran en el espacio o no.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Mapa de calor para observar la distribución de los accidentes con radares y semáforos
+g1 <- ggplot() +
+  stat_density_2d(data = st_coordinates(acc_sf) %>% as.data.frame(),
+                  aes(X, Y, fill = after_stat(level)), geom = "polygon", alpha = 0.6) +
+  scale_fill_viridis_c() +
+  geom_sf(data = acc_sf, color = "black", size = 0.0, alpha = 0.0) +
+  geom_sf(data = rad_sf, color = "black", size = 1.5, shape = 16, alpha = 0.8) +  # Puntos radares
+  geom_sf(data = fcr_sf, color = "red", size = 1.5, shape = 16, alpha = 0.8) +  # Puntos semáforos foto-control
+  labs(title = "Mapa de calor de accidentes",
+       subtitle = "Zonas con mayor densidad de eventos",
+       fill = "Densidad") +
+  theme_minimal() 
+
+# Mapa de fondo con OpenStreetMap
+g2 <- ggplot() + 
+  geom_sf(data = acc_sf, color = "black", size = 0.0, alpha = 0.0) +
+  annotation_map_tile(type = "osm") 
+```
+
+
+## 3.5. Análisis de patrones Complete Spatial Randomness (CSR)
+La observación gráfica no es suficiente determinante para identificar si los patrones son significativos o podrían surgir por azar. Por tanto, es necesario emplear métodos estadísticos que contrasten la hipótesis nula de CSR frente a otras alternativas.
+
+### 3.5.1. Diferencias gráficas entre el modelo teórico y el empírico
+Lo más común en estos casos es utilizar métodos basados en distancias para analizar la distribución espacial de los puntos, ya que ofrecen una evaluación más precisa que aquellos basados en cuadrantes.
+
+Uno de los métodos más utilizados (basado en distancias) consiste en verificar a través de gráficos si la diferencia entre el modelo teórico y empírico del conjunto de datos es significativa o no. Es conveniente saber que la distribución empírica se basa únicamente en los datos reales, mientras que la distribución teórica describe los valores esperados de una variable aleatoria bajo supuestos de aleatoriedad.
+
+Para ello, se utiliza la función envelope(), generando así múltiples simulaciones del proceso puntual. Esta función permite comparar gráficamente el comportamiento de los datos reales con el de datos simulados bajo CSR.
+
+Para finalizar, se crean los entornos de confianza, que son rangos de valores entre los cuales se espera que se encuentre la distribución empírica bajo el supuesto de CSR. Estos entornos se pueden ajustar mediante el argumento nrank.
+
+Ahora bien, la función envelope() solo admite datos en formato ppp, el cual incluye tanto las coordenadas de los puntos como la ventana de observación, es decir, el área donde se distribuyen. Por tanto, será necesario realizar previamente la transformación. Además, en un análisis de CSR, es conveniente eliminar observaiones duplicadas porque varios puntos en la misma ubicación rompen la suposición de aleatoriedad espacial, puediendo generar falsos agrupamientos. Si los duplicados no tienen justificación real, deben eliminarse para no distorsionar los resultados.
+
+A través de la función plot() representamos el resultado de forma gráfica.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+acc_sf_csr <- st_transform(acc_sf, crs = 25830)
+accidentes_sp <- as_Spatial(acc_sf_csr)
+
+coords_unique <- unique(coordinates(accidentes_sp))
+
+xrange = range(coords_unique[,1])
+yrange = range(coords_unique[,2])
+W = owin(xrange = xrange, yrange = yrange)
+
+accidentes_ppp <- as.ppp(coords_unique, W = W)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+env_acc <- envelope(accidentes_ppp, fun=Gest, nsim=100,nrank = 2, verbose = F)
+```
+
+Para asegurarnos de que el gráfico programado demuestra los resultados correctos, podemos evaluar la aleatoriedad mediante otras técnicas, como la prueba K de Ripley.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+K <- Kest(accidentes_ppp)
+```
+
+### 3.5.2. Ajuste de modelos espaciales puntuales: Técnica de estimación núcleo suavizado
+Rechazar la Aleatoriedad Espacial Completa (CSR) significa que las localizaciones observadas en el área de estudio no se producen al azar. Entonces es posible que se produzcan agrupaciones en la distribución de los accidentes de tráfico en Madrid, o simplemente se distribuyen de manera uniforme.
+
+Eixsten métodos para modelizar la densidad esperada de accidentes por unidad de área. De esta manera si las densidades obtenidas son homogéneas, los accidentes se estarían distribuyendo de manera uniforme. En cambio, si obtenemos densidades variadas, se nos indica que existen zonas de concentración de accidentes.
+
+El método utilizado en este caso para la estimación pasa por un proceso de Poisson no homogéneo. Concretamente utilizaremos un método catalogado como no paramétrico: el Estimador Núcleo Suavizado (kernel smoothing).
+
+En R, esto se realiza a través de la función kernel2d de la librería splancs. Para ejecutarla, además de proporcionar los datos a analizar (en formato ppp), es necesario indicarle el valor óptimo de suavizado "h" y el área sobre la cual se realizarán las estimaciones
+
+En primer lugar, debemos crear el polígono que delimita el área sobre la cual se realizará la estimación de densidad. Esta figura se construye utilizando los extremos de los rangos de coordenadas xrange y yrange.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+poli <- as.points(list(x=c(rep(min(xrange),2),rep(max(xrange),2)),y=c(min(yrange),rep(max(yrange),2),min(yrange))))
+```
+
+A continuación, utilizamos la función mse2d del paquete splancs para estimar el valor óptimo de h, que minimiza el error cuadrático medio en la estimación kernel.
+
+La función mse2d requiere como argumentos el objeto ppp de los accidentes, el pológono que define el área de estimación, el número de iteraciones a realizar (nsmse) y el valor máximo admitido para el parámetro de suavizado h (range).
+
+El valor máximo de la función G puede servir, por ejemplo, como guía para fijar el rango máximo de búsqueda de suavizado al usar mse2d().
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+G <- Gest(accidentes_ppp)
+max(G$r)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+suavizados <- mse2d(pts = as.points(accidentes_ppp),
+                    poly = poli,
+                    nsmse = 150,
+                    range = max(G$r))
+suavizados$h[which.min(suavizados$mse)]
+
+```
+
+Por último, se ejecuta la función kernel2d con el valor de suavizado óptimo obtenido. El resultado es un objeto que contiene las coordenadas de la cuadrícula y los valores estimados de intensidad.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+b <- kernel2d(pts = as.points(accidentes_ppp),
+              poly = poli,
+              h0 = suavizados$h[which.min(suavizados$mse)])
+```
+
+Si extraemos las coordenadas de la cuadrícula (b1, b2) y la matriz de intensidades estimadas (b3), podemos crear una gráfica 3D con persp, representando la superficie de intensidad de accidentes, donde las zonas más elevadas indican mayor densidad de eventos.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+b1 <- b$x
+b2 <- b$y
+b3 <- b$z
+```
+
+## 3.6. Análisis de la autocorrelación espacial
+El objetivo de realizar un análisis de datos regionales es evaluar si los valores de una variable (número de accidentes) están espacialmente correlacionados, es decir, si los valores similares tienden a agruparse en el espacio o no.
+
+### 3.6.1. Relativización de la información
+Para realizar este estudio, es necesario construir un objeto sf que resuma bastante información. Mediante la función st_contains() haremos un recuento de cuantos puntos (relativos a accidentes, semáforos y radares) caen dentro de cada polígono (relativo a distritos). De esta manera, conseguimos información respecto a cuantos accidentes, radares y semáforos han sido localizados dentro de cada distrito.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Cuántos accidentes hay en cada distrito
+distritos <- st_transform(distritos, crs = 4326)
+contenidos <- st_contains(distritos, acc_sf)
+conteo_manual <- lengths(contenidos)
+
+# Añadir como columna
+distritos$n_acc <- conteo_manual
+
+# Cuántos radares hay en cada distrito
+contenidos <- st_contains(distritos, rad_sf)
+conteo_manual <- lengths(contenidos)
+
+# Añadir como columna
+distritos$n_rad <- conteo_manual
+
+# Cuántos semaforos hay en cada distrito
+contenidos <- st_contains(distritos, fcr_sf)
+conteo_manual <- lengths(contenidos)
+
+# Añadir como columna
+distritos$n_fcr <- conteo_manual
+
+distritos$Shape_Area <- distritos$Shape_Area / 1000000
+
+distritos <- distritos %>% select(COD_DIS,NOMBRE, n_acc, n_rad, n_fcr, Shape_Area)
+```
+
+Ahora bien, para poder comparar entre distritos, es conveniente calcular el número de accidentes, radares o semáforos relativos a la intensidad de tráfico de cada distrito.
+
+Para ello, habíamos descargado dos conjuntos de datos para enero, febrero, marzo y abril de 2025. Por una parte, tenemos información sobre los puntos de medida de tráfico de madrid: id, distrito en el que están ubicados y coordenadas. Por otra parte, tenemos un recuento diario de los vehiculos que pasan cada 15 minutos por cada punto de medida.
+
+Si hacemos una join de los dos conjuntos de cada mes podemos obtener el número de coches que pasan cada 15 minutos por cada punto de medida, sabiendo también en que distrito se ubica cada uno. Entonces, hasta ahora, tendríamos un objeto con el id de cada punto de medida, el distrito al que pertenece y la intensidad media de tráfico mensual por 15 minutos.
+
+Para unificar toda la información por distritos, agrupamos el último objeto obtenido, haciendo una suma de la intensidad de tráfico de los puntos que pertenecen al mismo distrito.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# El cálculo mensual (join de cada punto de medida con su distrito, tráfico
+# medio por punto y suma por distrito) se realiza en preparar_trafico.R,
+# porque los datos brutos ocupan ~3 GB. Su resultado es el objeto trafico_mes,
+# con una fila por mes y distrito.
+```
+
+En este punto del análisis, disponemos un objeto para cada mes en el que se recoge la suma del tráfico medio cada 15 minutos de todos los puntos de medida de cada distrito. Para poder integrarlo con el número de accidentes, radares y semáforos por distrito, calcularemos la media de la intensidad de tráfico de los 4 meses.
+
+Finalmente, para poder interpretar los resultados mejor, dividimos la media entre 15, así tenemos la intensidad de tráfico media por minuto.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+med_distrito <- trafico_mes %>%
+  group_by(distrito) %>% 
+  summarise(int_med_15 = mean(total))
+
+med_distrito$int_med <- (med_distrito$int_med_15)/15
+```
+
+A través de una join lo integramos con el resto de datos.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+med_distrito$distrito <- as.character(med_distrito$distrito)
+info_distritos <- inner_join(distritos, med_distrito, by = c("COD_DIS" = "distrito"))
+```
+
+La tasa relativa sobre la cual realizaremos el análisis se calcula dividiendo el número de accidentes por distrito entre la suma intensidad media por minuto de todos los puntos de medida de cada distrito. Así relativizamos la información y podemos empezar con nuestro análisis de correlación espacial. Calcularemos una tasa relativa para el número de radares y semáforos de control por foto, por si nos puediera ser útil más adelante.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+info_distritos <- info_distritos %>%
+  mutate(acc_rel = n_acc/int_med, rad_rel = n_rad/int_med, fcr_rel = n_fcr/int_med)
+```
+
+### 3.6.2. Densidad de eventos de las diferentes áreas espaciales
+Para analizar la distribución espacial de los accidentes de tráfico, es conveniente interesante elaborar un mapa representativo. En este gráfico, cada distrito se representa mediante un polígono coloreado según su número de accidentes relativo al tráfico de la zona, utilizando una escala cromática en la que los tonos más intensos indican valores más elevados.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Paleta de colores para la tasa
+paleta <- colorNumeric(palette = "YlOrRd", domain = info_distritos$acc_rel)
+
+# Crear el mapa interactivo
+accidentalidad_distr <- leaflet(data = info_distritos) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    fillColor = ~paleta(acc_rel),
+    color = "white",
+    weight = 1,
+    opacity = 1,
+    fillOpacity = 0.7,
+    highlightOptions = highlightOptions(
+      weight = 2,
+      color = "#666",
+      fillOpacity = 0.9,
+      bringToFront = TRUE
+    ),
+    popup = ~paste(NOMBRE, COD_DIS, sep = ",")
+  ) %>%
+  addLegend(
+    pal = paleta,
+    values = ~acc_rel,
+    title = "Accidentalidad",
+    position = "bottomright"
+  )
+```
+
+### 3.6.3 Contraste global de autocorrelación espacial: Índice de Moran
+Una de las medidas más efectivas para detectar y medir el grado de autocorrelación espacial en un conjunto de datos geoespaciales es el índice I de Moran.
+
+El valor del índice puede interpretarse de la siguiente forma. Por un lado, un valor cercano a cero indica ausencia de autocorrelación espacial, es decir, que las zonas de concentración o ausencia de accidentes se distribuyen en el espacio de manera aleatoria. Por otro lado, un valor positivo indica autocorrelación positiva, es decir, que valores similares tienden a encontrarse cerca unos de otros, formando agrupamientos.
+
+Existe una función del paquete {spded} para calcular este índice, en la que solo necesitamos calcular previamente el número de vecinos que tiene cada zona con la función poly2nb() y los pesos para cada zona con la función nb2listw(), es decir, la intensidad en la que influye cada unidad sobre las demás según su proximidad o conexión espacial.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+wr <- spdep::poly2nb(info_distritos, queen = FALSE, snap = 0.1) 
+summary(wr)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# SIMPLIFICACIÓN CÁLCULO ÍNDICE DE MORAN
+ww <- spdep::nb2listw(wr, style = "B", zero.policy = TRUE)
+
+spdep::moran(x = info_distritos$acc_rel,
+             listw = ww,
+             n = length(ww$neighbours), # n
+             S0=spdep::Szero(ww)) # smw
+```
+
+Una vez calculado el índice, es conveniente aplicar el test global de Moran,el cual añade una evaluación de significación estadística para saber si el patrón observado podría haber ocurrido por azar. La función de R capaz de realizar este test es moran.test().
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+spdep::moran.test(info_distritos$acc_rel, listw=ww)
+```
+
+### 3.6.4. Contraste local de autocorrelación espacial: Índice LISA
+El test de Moran realizado en el punto anterior es es una herramienta útil para evaluar la existencia de autocorrelación espacial en un conjunto de datos de manera general, pero no permite detectar clústeres de unidades geográficas con valores similares o zonas con valores atípicos en relación a su vecindad, entre otros.
+
+Para ello, se utilizan tests locales de autocorrelación espacial, como el índice local LISA. La función diseñada en R para realizar este test es localmoran(), del paquete {spdep}.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+local.moran <- spdep::localmoran(info_distritos$acc_rel, listw = ww)
+```
+
+La manera más adecuada de interpretar el resultado obtenido consiste en representarlo gráficamente.
+
+El más destacado es el mapa de LISA. Para programarlo, es necesario extraer los unidades geográficas significativos presentes en los datos, aplicando la función lisa_clusters() al test local de LISA. Para finalizar, les asignamos un valor depende de la categoría a la que pertenezcan.
+
+Las áreas significativas pueden pertenecer a una de cuatro categorías, dependiendo de su número de accidentes relativos y el de sus áreas vecinas. El nombre de cada categoría esta formado por dos valores. El primer valor puede ser "high" o "low", y depende del número de accidentes de la unidad geográfica a la que se esta haciendo referencia. De la misma manera, el segundo valor también puede ser "high" o "low", y depende del número de accidentes relativo de las unidades geográficas que la rodean. Por ejemplo, la categoría "High-High" se corresponde con sonas con alta tasa de accidentes, rodeadas de zonas también altas.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+match_palette <- function(patterns, classifications, colors){
+  classes_present <- base::unique(patterns)
+  # Crear un named vector que mapea cada clasificación a su color
+  col_map <- setNames(colors, classifications)
+  # Filtrar el vector para quedarnos solo con las clases presentes, en ese orden
+  pal <- unname(col_map[classes_present])
+  return(pal)
+}
+
+# Función para representar LISA map
+lisa_map <- function(df, lisa, alpha = .05) {
+  clusters <- lisa_clusters(lisa,cutoff = alpha)
+  labels <- lisa_labels(lisa)
+  pvalue <- lisa_pvalues(lisa)
+  colors <- lisa_colors(lisa)
+  lisa_patterns <- labels[clusters+1]
+  
+  pal <- match_palette(lisa_patterns,labels,colors)
+  labels <- labels[labels %in% lisa_patterns]
+  
+  df["lisa_clusters"] <- clusters
+  tm_shape(df) +
+    tm_fill("lisa_clusters", labels = labels, palette = pal, style = "cat")
+}
+
+# Mapa LISA
+w <- rgeoda::queen_weights(info_distritos)
+lisa <- local_moran(w, info_distritos["acc_rel"])
+```
+
+## 3.7. Análisis bi-variado de la correlación espacial
+A lo largo del análisis de autocorrelación espacial, como bien indica su nombre (auto-) tratábamos de descubrir si el valor de una misma variable en un área era similar en su entorno.
+
+En este apartado, nuestro objetivo es detectar relaciones entre fenómenos diferentes. Por ejemplo, las zonas con alta concentración de accidentes cuentan también con una alta densidad de dispositivos de control (semáforos o radares)?
+
+De esta manera, se puede evaluar la efectividad de las medidas de control. Por ejemplo, si las zonas de concentración de accidentes disponen de muchos radares/semáforos, puede ser que falten dispositivos o los existentes no estén bien ubicados. En cambio, si las zonas peligrosas no cuentan con suficientes dispositivos de control, el análisis bivariado pone en evidencia lagunas en la cobertura de seguridad vial.
+
+Para realizar este análisis seguimos un procedimiento muy similar al del test local de moran anterior, pero en lugar de utilizar la función local_moran(), emplearemos local_bimoran().
+
+En primer lugar estudiaremos la relación entre accidentes y número de semáforos foto control.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# LISA bivariado: relación entre accidentes y número de semáforos 
+lisa_bv_fcr <- local_bimoran(w, info_distritos[c("acc_rel", "n_fcr")])
+```
+
+De la misma maneera, estudiaremos la relación entre accidentes y número de semáforos de control.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# LISA bivariado: relación entre accidentes y número de radares 
+lisa_bv_rad <- local_bimoran(w, info_distritos[c("acc_rel", "n_rad")])
+```
+
+En este caso también podemos representar gráficamente los resultados con un mapa LISA, hecho que nos facilitará la interpretación y la comprensión.
+
+# 4. Resultados
+
+## 4.1. Complete Spatial Randomness
+Tras utilizar varios métodos de geocodificación, Arcgis ha sido el más preciso, siendo capaz de identificar coordenadas geográficas para las 22 observaciones no disponibles.
+
+```{r,error=FALSE,message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+gacc + plot_spacer() + grad + plot_spacer() + gfcr + plot_layout(widths = c(1, 0.05, 1, 0.05, 1))
+```
+
+Al observar el gráfico, podemos comprobar que no hay observaciones fuera del área esperada. Entonces, este caso no será necesario realizar ninguna intersección.
+
+```{r,error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Mapa de calor para observar la distribución de los accidentes con radares y semáforos
+g1 | g2
+```
+
+Al diseñar este gráfico, hemos representado las zonas de mayor concentración de accidentes con colores que van del verde al amarillo, mientras que los colores más morados se corresponden con zonas de menor densidad. Además, se han representado con puntos rojos las localizaciones de los semáforos de foto-control, y en negro la del los radares de velocidad.
+
+Si observamos el gráfico, parece ser que los accidentes tienden a concentrarse en ciertas áreas. Respecto a los radares y semáforos, observamos que la mayoría de estos se encuentran en zonas de color morado, donde la densidad de accidentes no es alta. Esto podría no ser una casualidad, sino un posible efecto del control que generan estos dispositivos.
+
+A simple vista, el mapa aparentemente contradice la hipótesis de aletoriedad espacial. Si los accidentes siguieran un patrón de Complete Spatial Randomness (CSR), habríamos identificado una distribución más homogénea, sin concentraciones destacables en el espacio.
+
+El gráfico del nuevo objeto ppp refuerza la idea con la que hemos concluido el análisis de la distribución geográfica de los puntos, ya que estos no se reparten de manera uniforme a lo largo del cuadrado. Entonces, parece ser que los puntos tienden a agruparse de manera no aleatoria.
+
+```{r,error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+plot(accidentes_ppp, main="Accidentes de tráfico", axes = T)
+```
+
+Para visualizar si la diferencia entre el modelo teórico y los datos observados es significativa hemos optado por crear un gráfico usando la función plot().
+
+```{r,error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+plot(env_acc)
+```
+
+De esta manera comprobamos que la diferencia es significativa, y por tanto se confirma que los puntos no se distribuyen de forma aleatoria, sino que tienden a concentrarse en áreas específicas. 
+
+La prueba k de Ripley, refuerza la evidencia de que existe una notable diferencia entre el trazo teórico (Poisson) y el trazo estimado bord (border method or “reduced sample” estimator).
+
+```{r,error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+plot(K)
+```
+
+Representando la superficie de intensidad de accidentes podemos comporbar que sí que existen zonas más elevadas, indicando mayor densidad de eventos.
+
+```{r,error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+par(mar=c(2,2,1,2))
+persp(b1, b2, b3,
+      theta = 45, phi = 30, ltheta = 120, shade = 0.75,
+      expand = 0.5, col = "aquamarine", ticktype="detailed",
+      xlab = "", ylab = "", zlab = "", main = "Intensidad")
+```
+
+
+## 4.2. Análisis de autocorrelación espacial
+A través del siguiente gráfico observamos el ratio entre número de accidentes anual de cada distrito y el tráfico medio por minuto de todos los puntos de medida de cada distrito.
+
+```{r, error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+accidentalidad_distr
+```
+
+Se puede apreciar que el número de accidentes es muy diferente entre algunas de las diferentes áreas espaciales. Además, parece ser que los distritos con valores similares tienden a agruparse en el espacio. Por ejemplo, en el sud-este del área de estudio se concentran zonas con una tasa de accidentes alta, en cambio, en el resto de zonas predominan tasas bastante bajas.
+
+Ahora bien, este tipo de representación no permite determinar de forma estadísticamente significativa la existencia de autocorrelación espacial. Por tanto, es necesario aplicar pruebas específicas, como el índice de Moran.
+
+```{r, error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# SIMPLIFICACIÓN CÁLCULO ÍNDICE DE MORAN
+ww <- spdep::nb2listw(wr, style = "B", zero.policy = TRUE)
+
+spdep::moran(x = info_distritos$acc_rel,
+             listw = ww,
+             n = length(ww$neighbours), # n
+             S0=spdep::Szero(ww)) # smw
+```
+
+Al calcular el Índice I de Moran, obtenemos como resultado I = 0.2116468. Esto indica la existencia de autocorrelación espacial positiva moderada, es decir, las unidades vecinas tienden a tener un número de accidentes relativo similar.
+
+Ahora bien, como de significativa (en términos estadísticos) es esta autocorrelación espacial? Para dar respuesta a esta pregunta, podemos aplicar el test global de Moran. Este test se basa en el índice I de Moran, pero añade una evaluación de significación estadística para saber si el patrón observado podría haber ocurrido por azar.
+
+```{r, error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+spdep::moran.test(info_distritos$acc_rel, listw=ww)
+```
+
+El resultado del test global de Moran muestra un valor p de 0.007, lo que es muy bajo y permite rechazar la hipótesis nula de ausencia de autocorrelación espacial. Además, el estadístico Z de 2.45 indica que la diferencia entre el valor observado y el valor esperado bajo aleatoriedad es estadísticamente significativa, con una diferencia que supera más de 2 veces la desviaciones estándar.
+
+Por tanto, confirmamos que existe autocorrelación espacial significativa, pero no sabemos cuáles son los clústeres de unidades geográficas con valores similares o las zonas con valores atípicos en relación a su vecindad.
+
+Para obtener estos detalles, hemos optado por realizar un test local de autocorrelación espacial. Los resultados los evaluaremos de manera visual, a través del mapa de LISA.
+
+```{r, error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+lisa_map(info_distritos, lisa) +
+  tm_borders() +
+  tm_layout(title = "Local Moran Cluster Map of Tasa de Accidentes",legend.outside = TRUE)
+```
+
+En el contexto de nuestro análisis, destacaremos dos tipos de zonas en las que las políticas públicas deben enfocarse. Por una parte, en aquellas áreas que pertenezcan a clusters del tipo "High-High", ya que indican zonas de peligrosidad. Por otra parte, las zonas "High-Low", las cuales representan un punto problemático en un entorno aparentemente seguro, y aunque estén aisladas requieren de atención. En resumen, todas aquellas zonas con un número significativo de accidentes, independientemente de los datos de los espacios que las rodean.
+
+Observando el gráfico identificamos como zonas High-High los siguientes distritos: Puente de Vallecas (13), Villaverde (17), Villa de Vallecas (18). En cambio, como zona High-Low tenemos solamente el Centro (1).  
+
+Por tanto, obtenemos 4 zonas críticas. Posteriormente analizaremos la relación entre número de accidentes y dispositivos de prevención, para conocer si la causa principal de que estas zonas acumulen tantos accidentes es la falta de presencia de estos dispositivos de seguridad.
+
+## 4.3. Análisis bi-variado de correlación espacial
+A través del siguiente gráfico analizamos la correlación en un mismo espacio la cantidad de accidentes y semáforos de foto control.
+
+```{r,error=FALSE,message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Clusters y etiquetas
+clusters_bv_fcr <- lisa_clusters(lisa_bv_fcr)
+labels_bv_fcr <- lisa_labels(lisa_bv_fcr)
+colors_bv_fcr <- c(
+  "Not significant" = "#D3D3D3",  
+  "High-High" = "#E41A1C",         
+  "Low-Low" = "#377EB8",         
+  "High-Low" = "#FF7F00",         
+  "Low-High" = "#4DAF4A" )         
+
+
+# Añadir al sf
+info_distritos$lisa_bv_cluster_fcr <- labels_bv_fcr[clusters_bv_fcr + 1]
+
+# Visualizar
+tm_shape(info_distritos) +
+  tm_fill("lisa_bv_cluster_fcr", palette = colors_bv_fcr, title = "LISA Bivariado\n(Accidentes ~ Semáforos)") +
+  tm_borders() +
+  tm_layout(legend.outside = TRUE)
+```
+
+Por una parte, respecto a los semáforos de foto control, obtuvimos que en Villaverde, Villa de Vallecas y Vicálvaro hay un número significativamente bajo de semáforos de foto control en relación al número de accidentes. Justo todas estas zonas habían sido consideradas como críticas (por el resultado obtenido en el test local de Moran), por tanto, podemos afirmar que una de las causas por las que estos distritos cuentan con un número tan elevado de accidentes en relación a su tráfico es la falta de implementación de semáforos de foto control. 
+
+Además, no identificamos ninguna área con alta siniestralidad y alta concentración de semáforos con foto control, pero sí encontramos zonas con un número significativamente bajo para ambas variables. Estos hechos verifican que los dispositivos son eficaces una vez instalados. 
+
+En cambio, identificamos a Usera como distrito poco dotado de semáforos con control foto, aunque el número de accidentes también era bajo. No es una zona que requiera de atención, pero si en un futuro experimenta un aumento de accidentes en relación a su tráfico, una de las posibles políticas de mejora es la implementación de más dispositivos de control como estos.
+
+```{r,error=FALSE,message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Clusters y etiquetas
+clusters_bv_rad <- lisa_clusters(lisa_bv_rad)
+labels_bv_rad <- lisa_labels(lisa_bv_rad)
+colors_bv_rad <- c(
+  "Not significant" = "#D3D3D3",  
+  "High-High" = "#E41A1C",         
+  "Low-Low" = "#377EB8",         
+  "High-Low" = "#FF7F00",         
+  "Low-High" = "#4DAF4A" )         
+
+
+# Añadir al sf
+info_distritos$lisa_bv_cluster_rad <- labels_bv_rad[clusters_bv_rad + 1]
+
+# Visualizar
+tm_shape(info_distritos) +
+  tm_fill("lisa_bv_cluster_rad", palette = colors_bv_rad, title = "LISA Bivariado\n(Accidentes ~ Radares)") +
+  tm_borders() +
+  tm_layout(legend.outside = TRUE)
+```
+
+Por otra parte, por lo que hace a los radares descubrimos que el Centro, el cual es un distrito crítico por si accidentalidad, cuenta con un número significativamente alto de radares de velocidad. Esto puede sugerir que los radares no han sido eficientes, ya sea por no estar ubicados en los tramos más peligrosos, por el mal diseño urbano o la falta de infraestructura segura. Por tanto, no podemos afirmar que el alto número de accidentes en relación al tráfico de Madrid Centro se deba a su poca dotación de radares.
+
+En cambio, en el caso de Barajas, sí que puede ser una de las causas por la que se sufren tantos accidentes, teniendo en cuenta su intensidad de tráfico. Este distrito no había sido catalogado como crítico en el primer test local de Moran realizado. Esto se debe a que está rodeado de zonas con valores diferentes, por lo que no se detectó como parte de un agrupamiento significativo. Ahora bien, en el análisis bivariado hemos comprobado que aunque su número no destaque en comparacion a sus vecinos, sí que es significativamente alto en relación con el número de radares implementados en él.
+
+Finalmente, el distrito San Blas - Canillejas, ha sido clasificado como zona con número de radares implementado significativamente bajo, aunque el número de accidentes también es bajo. Por tanto, tampoco es una zona que requiera de atención, pero una de las posibles políticas de futura mejora es la implementación de más dispositivos de control como estos, si en un futuro experimenta un aumento de accidentes en relación a su tráfico.
+
+
+# 5. Conclusiones
+Al finalizar el estudio, podemos sacar algunas conlclusiones sobre el potencial del método utilizado.
+
+En primer lugar, si disponemos de información geográfica sobre algunos sistemas de seguridad vial implementados en la ciudad se puede investigar a través de pruebas estadísticas la relación entre el número de accidentes y el número de dispositivos implementados de un determinado sistema, dentro de un mismo espacio. De esta manera, es posible descubrir qué sistemas de seguridad tienen poca presencia en aquellas zonas críticas y definir la poca dotación de dispositivos como causa del alto número de accidentes . Además, es posible identificar si las zonas bien dotadas de un determinado sistema de seguridad cuentan con un número bajo de accidentes, confirmando así la eficacia de ese sistema.
+
+Análogamente, si existen zonas con alta presencia de dispositivos de seguridad de cierto tipo, pero el número de accidentes sigue siendo significativamente alto, sugiere que ese sistema de control no esta siendo efectivo.
+
+En resumen, a través del estudio realizado hemos podido comprobar la eficacia y si la falta de implementación de un sistema de control vial en concreto es la causa por la cual se concentraba un número tan elevado de accidentes en las zonas críticas. 
+
+En este caso solo hemos podido realizar la investigación para los semáforos de foto control y los radares. Por eso, el objetivo del proyecto es mostrar que el método utilizado puede servir como base para estudios futuros más profundos, en los que se disponga de datos sobre otros tipos de sistemas de control vial.
+
+
+# 6. Annexo
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Librerías
+libs <- c("readxl", "readr", "tidyverse", "tidygeocoder", "sf", "spanishoddata","ggplot2", "ggspatial", "osmdata", "mapSpain", "patchwork","spatstat","sp", "splancs", "leaflet", "rgeoda", "spdep", "tmap", "RColorBrewer")
+installed_libs <- libs %in% rownames(installed.packages())
+if (any(installed_libs == F)) {install.packages(libs[!installed_libs])}
+invisible(lapply(libs, library, character.only = T))
+rm(libs, installed_libs)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Cargamos los datos
+## Accidentes de tráfico en Madrid durante enero, febrero, marzo y abril de 2025
+acc <- read_xlsx("./principales/accidentes25.xlsx")
+
+# Radares
+rad <- read_xlsx("./principales/radares.xlsx")
+
+# Semáforo foto control rojo
+fcr <- read_xlsx("./principales/foto_rojo.xlsx")
+
+# Distritos
+distritos <- st_read("./distritos/DISTRITOS.shp")
+
+## Intensidad de tráfico por distrito y mes (enero-abril 2025)
+## Resumen generado con preparar_trafico.R a partir de los datos brutos (~3 GB)
+trafico_mes <- read_csv("./trafico/trafico_distrito_mes.csv",
+                        col_types = cols(mes = col_character(), distrito = col_character()))
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Antes de pasar los datos a formato sf miramos si hay observaciones con coordenadas NA
+sum(is.na(acc$coordenada_x_utm))  
+sum(is.na(acc$coordenada_y_utm))
+
+sum(is.na(rad$Latitud))  
+sum(is.na(rad$Longitud))
+
+sum(is.na(fcr$longitud))  
+sum(is.na(fcr$latitud))
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Eliminamos dichas observaciones del conjunto para analizarlas aparte
+acc_full <- acc %>%  filter(!is.na(coordenada_x_utm) | !is.na(coordenada_y_utm))
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Las filtramos y les asignamos unas coordenadas con geocodificación
+na <- acc %>% filter(is.na(coordenada_x_utm) |
+                         is.na(coordenada_y_utm)) %>% 
+  mutate(info = paste(localizacion," Madrid", sep = ","))
+
+na_geocoded <- geocode(na, address = info, method = "arcgis")
+
+na_ok <- na_geocoded %>% mutate(coordenada_x_utm = long, coordenada_y_utm = lat) %>% filter(!is.na(long) | !is.na(lat)) %>% select(!c(lat,long,info))
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Tranformamos todos los conjuntos a formato sf
+acc_full$coordenada_x_utm <- as.numeric(acc_full$coordenada_x_utm)
+acc_full$coordenada_y_utm <- as.numeric(acc_full$coordenada_y_utm)
+acc_full_sf <- st_as_sf(acc_full, coords = c("coordenada_x_utm", "coordenada_y_utm"), crs = 25830)
+acc_full_sf <- st_transform(acc_full_sf, crs = 4326)
+
+na_ok$coordenada_x_utm <- as.numeric(na_ok$coordenada_x_utm)
+na_ok$coordenada_y_utm <- as.numeric(na_ok$coordenada_y_utm)
+na_ok_sf <- st_as_sf(na_ok, coords = c("coordenada_x_utm", "coordenada_y_utm"), crs = 4326)   # (4326 ya que al geodificar tenemos lat y long)
+
+rad_sf <- st_as_sf(rad, coords = c("Longitud", "Latitud"), crs = 4326)
+
+fcr_sf <- st_as_sf(fcr, coords = c("longitud", "latitud"), crs = 4326)
+
+# Unimos las observaciones de los dos conjuntos sf de accidentes
+acc_sf <- rbind(acc_full_sf, na_ok_sf)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Gráfico de accidentes
+gacc <- ggplot() +
+  annotation_map_tile(type = "osm") +
+  geom_sf(data = acc_sf, aes(color = "Accidentes"), size = 0.01, alpha = 0.7) +
+  scale_color_manual(values = "red") +
+  labs(title = "Accidentes", color = NULL) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+
+# Gráfico de radares
+grad <- ggplot() +
+  annotation_map_tile(type = "osm") +
+  geom_sf(data = rad_sf, aes(color = "Radares"), size = 0.5, alpha = 0.8) +
+  scale_color_manual(values = "blue") +
+  labs(title = "Radares", color = NULL) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+
+# Gráfico de foto-control
+gfcr <- ggplot() +
+  annotation_map_tile(type = "osm") +
+  geom_sf(data = fcr_sf, aes(color = "Foto-control"), size = 0.5, alpha = 0.8) +
+  scale_color_manual(values = "darkgreen") +
+  labs(title = "Semáforos Foto Control", color = NULL) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+gacc + plot_spacer() + grad + plot_spacer() + gfcr + plot_layout(widths = c(1, 0.05, 1, 0.05, 1))
+```
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Mapa de calor para observar la distribución de los accidentes con radares y semáforos
+g1 <- ggplot() +
+  stat_density_2d(data = st_coordinates(acc_sf) %>% as.data.frame(),
+                  aes(X, Y, fill = after_stat(level)), geom = "polygon", alpha = 0.6) +
+  scale_fill_viridis_c() +
+  geom_sf(data = acc_sf, color = "black", size = 0.0, alpha = 0.0) +
+  geom_sf(data = rad_sf, color = "black", size = 1.5, shape = 16, alpha = 0.8) +  # Puntos radares
+  geom_sf(data = fcr_sf, color = "red", size = 1.5, shape = 16, alpha = 0.8) +  # Puntos semáforos foto-control
+  labs(title = "Mapa de calor de accidentes",
+       subtitle = "Zonas con mayor densidad de eventos",
+       fill = "Densidad") +
+  theme_minimal() 
+
+# Mapa de fondo con OpenStreetMap
+g2 <- ggplot() + 
+  geom_sf(data = acc_sf, color = "black", size = 0.0, alpha = 0.0) +
+  annotation_map_tile(type = "osm") 
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Mapa de calor para observar la distribución de los accidentes con radares y semáforos
+g1 | g2
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+acc_sf_csr <- st_transform(acc_sf, crs = 25830)
+accidentes_sp <- as_Spatial(acc_sf_csr)
+
+coords_unique <- unique(coordinates(accidentes_sp))
+
+xrange = range(coords_unique[,1])
+yrange = range(coords_unique[,2])
+W = owin(xrange = xrange, yrange = yrange)
+
+accidentes_ppp <- as.ppp(coords_unique, W = W)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+plot(accidentes_ppp, main="Accidentes de tráfico", axes = T)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+env_acc <- envelope(accidentes_ppp, fun=Gest, nsim=100,nrank = 2, verbose = F)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+plot(env_acc)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+K <- Kest(accidentes_ppp)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+plot(K)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+poli <- as.points(list(x=c(rep(min(xrange),2),rep(max(xrange),2)),y=c(min(yrange),rep(max(yrange),2),min(yrange))))
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+G <- Gest(accidentes_ppp)
+max(G$r)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+suavizados <- mse2d(pts = as.points(accidentes_ppp),
+                    poly = poli,
+                    nsmse = 150,
+                    range = max(G$r))
+suavizados$h[which.min(suavizados$mse)]
+
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+b <- kernel2d(pts = as.points(accidentes_ppp),
+              poly = poli,
+              h0 = suavizados$h[which.min(suavizados$mse)])
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+b1 <- b$x
+b2 <- b$y
+b3 <- b$z
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+par(mar=c(2,2,1,2))
+persp(b1, b2, b3,
+      theta = 45, phi = 30, ltheta = 120, shade = 0.75,
+      expand = 0.5, col = "aquamarine", ticktype="detailed",
+      xlab = "", ylab = "", zlab = "", main = "Intensidad")
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Cuántos accidentes hay en cada distrito
+distritos <- st_transform(distritos, crs = 4326)
+contenidos <- st_contains(distritos, acc_sf)
+conteo_manual <- lengths(contenidos)
+
+# Añadir como columna
+distritos$n_acc <- conteo_manual
+
+# Cuántos radares hay en cada distrito
+contenidos <- st_contains(distritos, rad_sf)
+conteo_manual <- lengths(contenidos)
+
+# Añadir como columna
+distritos$n_rad <- conteo_manual
+
+# Cuántos semaforos hay en cada distrito
+contenidos <- st_contains(distritos, fcr_sf)
+conteo_manual <- lengths(contenidos)
+
+# Añadir como columna
+distritos$n_fcr <- conteo_manual
+
+distritos$Shape_Area <- distritos$Shape_Area / 1000000
+
+distritos <- distritos %>% select(COD_DIS,NOMBRE, n_acc, n_rad, n_fcr, Shape_Area)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# El cálculo mensual (join de cada punto de medida con su distrito, tráfico
+# medio por punto y suma por distrito) se realiza en preparar_trafico.R,
+# porque los datos brutos ocupan ~3 GB. Su resultado es el objeto trafico_mes,
+# con una fila por mes y distrito.
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+med_distrito <- trafico_mes %>%
+  group_by(distrito) %>% 
+  summarise(int_med_15 = mean(total))
+
+med_distrito$int_med <- (med_distrito$int_med_15)/15
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+med_distrito$distrito <- as.character(med_distrito$distrito)
+info_distritos <- inner_join(distritos, med_distrito, by = c("COD_DIS" = "distrito"))
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+info_distritos <- info_distritos %>%
+  mutate(acc_rel = n_acc/int_med, rad_rel = n_rad/int_med, fcr_rel = n_fcr/int_med)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Paleta de colores para la tasa
+paleta <- colorNumeric(palette = "YlOrRd", domain = info_distritos$acc_rel)
+
+# Crear el mapa interactivo
+accidentalidad_distr <- leaflet(data = info_distritos) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    fillColor = ~paleta(acc_rel),
+    color = "white",
+    weight = 1,
+    opacity = 1,
+    fillOpacity = 0.7,
+    highlightOptions = highlightOptions(
+      weight = 2,
+      color = "#666",
+      fillOpacity = 0.9,
+      bringToFront = TRUE
+    ),
+    popup = ~paste(NOMBRE, COD_DIS, sep = ",")
+  ) %>%
+  addLegend(
+    pal = paleta,
+    values = ~acc_rel,
+    title = "Accidentalidad",
+    position = "bottomright"
+  )
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+accidentalidad_distr
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+wr <- spdep::poly2nb(info_distritos, queen = FALSE, snap = 0.1) 
+summary(wr)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# SIMPLIFICACIÓN CÁLCULO ÍNDICE DE MORAN
+ww <- spdep::nb2listw(wr, style = "B", zero.policy = TRUE)
+
+spdep::moran(x = info_distritos$acc_rel,
+             listw = ww,
+             n = length(ww$neighbours), # n
+             S0=spdep::Szero(ww)) # smw
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+spdep::moran.test(info_distritos$acc_rel, listw=ww)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+local.moran <- spdep::localmoran(info_distritos$acc_rel, listw = ww)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+match_palette <- function(patterns, classifications, colors){
+  classes_present <- base::unique(patterns)
+  # Crear un named vector que mapea cada clasificación a su color
+  col_map <- setNames(colors, classifications)
+  # Filtrar el vector para quedarnos solo con las clases presentes, en ese orden
+  pal <- unname(col_map[classes_present])
+  return(pal)
+}
+
+# Función para representar LISA map
+lisa_map <- function(df, lisa, alpha = .05) {
+  clusters <- lisa_clusters(lisa,cutoff = alpha)
+  labels <- lisa_labels(lisa)
+  pvalue <- lisa_pvalues(lisa)
+  colors <- lisa_colors(lisa)
+  lisa_patterns <- labels[clusters+1]
+  
+  pal <- match_palette(lisa_patterns,labels,colors)
+  labels <- labels[labels %in% lisa_patterns]
+  
+  df["lisa_clusters"] <- clusters
+  tm_shape(df) +
+    tm_fill("lisa_clusters", labels = labels, palette = pal, style = "cat")
+}
+
+# Mapa LISA
+w <- rgeoda::queen_weights(info_distritos)
+lisa <- local_moran(w, info_distritos["acc_rel"])
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+lisa_map(info_distritos, lisa) +
+  tm_borders() +
+  tm_layout(title = "Local Moran Cluster Map of Tasa de Accidentes",legend.outside = TRUE)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# LISA bivariado: relación entre accidentes y número de semáforos 
+lisa_bv_fcr <- local_bimoran(w, info_distritos[c("acc_rel", "n_fcr")])
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Clusters y etiquetas
+clusters_bv_fcr <- lisa_clusters(lisa_bv_fcr)
+labels_bv_fcr <- lisa_labels(lisa_bv_fcr)
+colors_bv_fcr <- c(
+  "Not significant" = "#D3D3D3",  
+  "High-High" = "#E41A1C",         
+  "Low-Low" = "#377EB8",         
+  "High-Low" = "#FF7F00",         
+  "Low-High" = "#4DAF4A" )         
+
+
+# Añadir al sf
+info_distritos$lisa_bv_cluster_fcr <- labels_bv_fcr[clusters_bv_fcr + 1]
+
+# Visualizar
+tm_shape(info_distritos) +
+  tm_fill("lisa_bv_cluster_fcr", palette = colors_bv_fcr, title = "LISA Bivariado\n(Accidentes ~ Semáforos)") +
+  tm_borders() +
+  tm_layout(legend.outside = TRUE)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# LISA bivariado: relación entre accidentes y número de radares 
+lisa_bv_rad <- local_bimoran(w, info_distritos[c("acc_rel", "n_rad")])
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Clusters y etiquetas
+clusters_bv_rad <- lisa_clusters(lisa_bv_rad)
+labels_bv_rad <- lisa_labels(lisa_bv_rad)
+colors_bv_rad <- c(
+  "Not significant" = "#D3D3D3",  
+  "High-High" = "#E41A1C",         
+  "Low-Low" = "#377EB8",         
+  "High-Low" = "#FF7F00",         
+  "Low-High" = "#4DAF4A" )         
+
+
+# Añadir al sf
+info_distritos$lisa_bv_cluster_rad <- labels_bv_rad[clusters_bv_rad + 1]
+
+# Visualizar
+tm_shape(info_distritos) +
+  tm_fill("lisa_bv_cluster_rad", palette = colors_bv_rad, title = "LISA Bivariado\n(Accidentes ~ Radares)") +
+  tm_borders() +
+  tm_layout(legend.outside = TRUE)
+```

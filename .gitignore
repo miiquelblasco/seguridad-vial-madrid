@@ -1,0 +1,19 @@
+# --- Datos brutos de tráfico (~3 GB). Ver preparar_trafico.R ---
+intensidad_trafico/
+pmeds/
+
+# --- Sesión de R y cachés ---
+.RData
+.RDataTmp*
+.Rhistory
+.Rproj.user/
+rosm.cache/
+
+# --- Salidas generadas al renderizar ---
+informe.html
+informe_files/
+*_cache/
+
+# --- Temporales ---
+~$*
+.DS_Store
