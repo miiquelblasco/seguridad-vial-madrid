@@ -1,0 +1,1093 @@
+---
+lang: en
+title: "Road Safety in Madrid"
+subtitle: "A spatial analysis of traffic accidents, speed cameras and red-light cameras"
+author:
+  - name: Miquel Blasco Cantó
+    email: "miblas4@alumni.uv.es"
+toc: true
+draft: false
+code-link: true
+lightbox:
+  match: auto
+  effect: fade
+  desc-position: left
+  css-class: "lightwidth"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+---
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+libs <- c("readxl", "readr", "tidyverse", "tidygeocoder", "sf", "spanishoddata","ggplot2", "ggspatial", "osmdata", "mapSpain", "patchwork","spatstat","sp", "splancs", "leaflet", "rgeoda", "spdep", "tmap", "RColorBrewer")
+installed_libs <- libs %in% rownames(installed.packages())
+if (any(installed_libs == F)) {install.packages(libs[!installed_libs])}
+invisible(lapply(libs, library, character.only = T))
+rm(libs, installed_libs)
+```
+
+# 1. Abstract
+Traffic accidents in Madrid are not randomly distributed: they tend to cluster in space, so some areas show a high concentration of accidents relative to their traffic. Building on this evidence, our goal has been to identify the critical areas where the (relative) number of accidents is significantly high compared with their surroundings, so that road safety policies can focus on them.
+
+Once these areas were identified, we set out to test whether one of the causes of their high number of accidents is a significantly low number of devices from a particular control system. We were also able to check whether non-critical areas are well equipped, which would suggest that these devices are effective.
+
+To do so, we studied the relationship between accidents and red-light cameras/speed cameras within the same spatial unit using statistical methods, since georeferenced data on these road safety and prevention systems were available.
+
+
+# 2. Introduction
+Road safety is one of the priorities of urban public policy, especially in large cities with heavy traffic such as Madrid. To improve it, public authorities take measures aimed at reducing the number of accidents. These include speed cameras and red-light camera systems.
+
+On the one hand, red-light camera systems consist of infrared cameras installed at traffic lights that capture the number plate of vehicles that fail to stop at signalled pedestrian crossings. On the other hand, speed cameras are designed to record vehicles that exceed the speed limit as they pass. The purpose of these systems is to improve road safety by reducing dangerous behaviour, since they create a sense of constant surveillance.
+
+The aim of this research is to detect whether there are areas with a significantly different concentration of accidents from others. If so, we will focus on detecting clusters of areas with a high number of accidents in order to identify them, and we will analyse their relationship with the number of devices of a given safety system in those areas. The results can be useful for two main reasons. First, to assess the effectiveness of safety devices, serving as a basis for more in-depth studies. Second, to find out whether the number of devices installed in each area is one of the causes of a high accident rate.
+
+To this end, we obtained georeferenced data on speed cameras and red-light cameras from the Madrid City Council open data portal, together with the dataset of traffic accidents in Madrid during 2025. The study is carried out on these data and, applying different approaches, methods and analysis techniques, we will try to test the proposed hypothesis.
+
+# 3. Methodology
+
+## 3.1. Collecting geospatial data
+The Madrid City Council open data portal allows any available dataset to be downloaded in several formats.
+
+For this project, we downloaded 3 Excel files with information on accidents, speed cameras and red-light cameras in Madrid (2025). Each observation in the 3 data frames includes descriptive information and the geographic coordinates that locate the events or objects.
+
+In addition, for the spatial correlation analysis, we obtained a shapefile containing the administrative boundaries of the districts of the city of Madrid.
+
+Finally, we have data from the traffic measurement points for 2025 so far (January, February, March and April). This allows us to approximate the average traffic intensity per district, which is key to calculating the number of accidents, speed cameras or red-light cameras relative to the traffic intensity of each district.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Load the data
+## Traffic accidents in Madrid during January, February, March and April 2025
+acc <- read_xlsx("./principales/accidentes25.xlsx")
+
+# Speed cameras
+rad <- read_xlsx("./principales/radares.xlsx")
+
+# Red-light cameras
+fcr <- read_xlsx("./principales/foto_rojo.xlsx")
+
+# Districts
+distritos <- st_read("./distritos/DISTRITOS.shp")
+
+## Traffic intensity by district and month (January-April 2025)
+## Summary generated with preparar_trafico.R from the raw data (~3 GB)
+trafico_mes <- read_csv("./trafico/trafico_distrito_mes.csv",
+                        col_types = cols(mes = col_character(), distrito = col_character()))
+```
+
+## 3.2. Conversion to sf format
+
+### 3.2.1. Identifying missing coordinates
+Given the structure of the data, converting it to sf format is a good option to make later analyses and plots easier. However, the conversion will not run if there are missing (NA) coordinates. The first step is therefore to identify any observations with missing coordinates in the original datasets.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Before converting the data to sf, check for observations with missing coordinates
+sum(is.na(acc$coordenada_x_utm))
+sum(is.na(acc$coordenada_y_utm))
+
+sum(is.na(rad$Latitud))
+sum(is.na(rad$Longitud))
+
+sum(is.na(fcr$longitud))
+sum(is.na(fcr$latitud))
+```
+
+In this case, we only found 22 observations with missing coordinates, all of them in the accidents dataset. To be able to convert the data, we remove these observations from the original dataset and handle them separately.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Remove these observations from the dataset to handle them separately
+acc_full <- acc %>%  filter(!is.na(coordenada_x_utm) | !is.na(coordenada_y_utm))
+```
+
+### 3.2.2. Geocoding
+Since it is a small number of observations, one option would be to simply drop them. However, whenever possible, it is better to try to recover the information. In this case, besides the coordinates, the dataset includes geographic information on the district, street and number where the accident took place. We therefore use geocoding to convert these addresses into geographic coordinates.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Filter them and assign coordinates through geocoding
+na <- acc %>% filter(is.na(coordenada_x_utm) |
+                         is.na(coordenada_y_utm)) %>%
+  mutate(info = paste(localizacion," Madrid", sep = ","))
+
+na_geocoded <- geocode(na, address = info, method = "arcgis")
+
+na_ok <- na_geocoded %>% mutate(coordenada_x_utm = long, coordenada_y_utm = lat) %>% filter(!is.na(long) | !is.na(lat)) %>% select(!c(lat,long,info))
+```
+
+### 3.2.3. Running the conversion
+At this point we have the original accidents data frame without the missing-coordinate observations, an auxiliary data frame with those same observations already geocoded, and the original speed camera and red-light camera data, which have no missing values. This allows us to convert the data to sf format. Finally, we combine the observations of the two accident sf objects. As a result, we obtain the three datasets on which our research is based, in sf format.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Convert all datasets to sf format
+acc_full$coordenada_x_utm <- as.numeric(acc_full$coordenada_x_utm)
+acc_full$coordenada_y_utm <- as.numeric(acc_full$coordenada_y_utm)
+acc_full_sf <- st_as_sf(acc_full, coords = c("coordenada_x_utm", "coordenada_y_utm"), crs = 25830)
+acc_full_sf <- st_transform(acc_full_sf, crs = 4326)
+
+na_ok$coordenada_x_utm <- as.numeric(na_ok$coordenada_x_utm)
+na_ok$coordenada_y_utm <- as.numeric(na_ok$coordenada_y_utm)
+na_ok_sf <- st_as_sf(na_ok, coords = c("coordenada_x_utm", "coordenada_y_utm"), crs = 4326)   # (4326 because geocoding returns latitude and longitude)
+
+rad_sf <- st_as_sf(rad, coords = c("Longitud", "Latitud"), crs = 4326)
+
+fcr_sf <- st_as_sf(fcr, coords = c("longitud", "latitud"), crs = 4326)
+
+# Combine the observations of the two accident sf objects
+acc_sf <- rbind(acc_full_sf, na_ok_sf)
+```
+
+## 3.3. Initial plots
+After geocoding, plotting the coordinates is key to spotting possible errors, such as points assigned to the wrong location (outside the expected area).
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Accidents plot
+gacc <- ggplot() +
+  annotation_map_tile(type = "osm") +
+  geom_sf(data = acc_sf, aes(color = "Accidents"), size = 0.01, alpha = 0.7) +
+  scale_color_manual(values = "red") +
+  labs(title = "Accidents", color = NULL) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+
+# Speed cameras plot
+grad <- ggplot() +
+  annotation_map_tile(type = "osm") +
+  geom_sf(data = rad_sf, aes(color = "Speed cameras"), size = 0.5, alpha = 0.8) +
+  scale_color_manual(values = "blue") +
+  labs(title = "Speed cameras", color = NULL) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+
+# Red-light cameras plot
+gfcr <- ggplot() +
+  annotation_map_tile(type = "osm") +
+  geom_sf(data = fcr_sf, aes(color = "Red-light cameras"), size = 0.5, alpha = 0.8) +
+  scale_color_manual(values = "darkgreen") +
+  labs(title = "Red-light cameras", color = NULL) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+If we find no observations outside the expected area, no intersection is needed and we can continue with the analysis.
+
+## 3.4. Analysing the geographic distribution of the points
+One of the most interesting aspects to study during the exploratory data analysis is the apparent geographic distribution of the data. With geospatial data, heat maps are a useful way to see how the data are distributed. They also give us a first idea of whether some areas have a higher density of accidents than others, and whether these areas are concentrated in space.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Heat map showing the distribution of accidents together with speed cameras and red-light cameras
+g1 <- ggplot() +
+  stat_density_2d(data = st_coordinates(acc_sf) %>% as.data.frame(),
+                  aes(X, Y, fill = after_stat(level)), geom = "polygon", alpha = 0.6) +
+  scale_fill_viridis_c() +
+  geom_sf(data = acc_sf, color = "black", size = 0.0, alpha = 0.0) +
+  geom_sf(data = rad_sf, color = "black", size = 1.5, shape = 16, alpha = 0.8) +  # Speed camera points
+  geom_sf(data = fcr_sf, color = "red", size = 1.5, shape = 16, alpha = 0.8) +  # Red-light camera points
+  labs(title = "Accident heat map",
+       subtitle = "Areas with the highest density of events",
+       fill = "Density") +
+  theme_minimal()
+
+# Base map from OpenStreetMap
+g2 <- ggplot() +
+  geom_sf(data = acc_sf, color = "black", size = 0.0, alpha = 0.0) +
+  annotation_map_tile(type = "osm")
+```
+
+
+## 3.5. Complete Spatial Randomness (CSR) analysis
+Visual inspection is not enough to determine whether the patterns are significant or could have arisen by chance. Statistical methods are therefore needed to test the null hypothesis of CSR against other alternatives.
+
+### 3.5.1. Graphical differences between the theoretical and empirical models
+The most common approach in these cases is to use distance-based methods to analyse the spatial distribution of points, since they give a more accurate assessment than quadrat-based methods.
+
+One of the most widely used distance-based methods consists of checking graphically whether the difference between the theoretical and the empirical model of the dataset is significant. The empirical distribution is based only on the observed data, while the theoretical distribution describes the expected values of a random variable under the assumption of randomness.
+
+For this, we use the envelope() function, which generates multiple simulations of the point process. It allows the behaviour of the observed data to be compared graphically with that of data simulated under CSR.
+
+Finally, confidence envelopes are built: ranges of values within which the empirical distribution is expected to fall under CSR. These envelopes can be adjusted with the nrank argument.
+
+However, envelope() only accepts data in ppp format, which includes both the point coordinates and the observation window, that is, the area over which the points are distributed. The data must therefore be converted first. In addition, in a CSR analysis it is advisable to remove duplicate observations, because several points at the same location break the assumption of spatial randomness and can create false clusters. If duplicates have no real justification, they should be removed so as not to distort the results.
+
+We plot the result with the plot() function.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+acc_sf_csr <- st_transform(acc_sf, crs = 25830)
+accidentes_sp <- as_Spatial(acc_sf_csr)
+
+coords_unique <- unique(coordinates(accidentes_sp))
+
+xrange = range(coords_unique[,1])
+yrange = range(coords_unique[,2])
+W = owin(xrange = xrange, yrange = yrange)
+
+accidentes_ppp <- as.ppp(coords_unique, W = W)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+env_acc <- envelope(accidentes_ppp, fun=Gest, nsim=100,nrank = 2, verbose = F)
+```
+
+To make sure the plot gives the correct results, we can also assess randomness with other techniques, such as Ripley's K test.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+K <- Kest(accidentes_ppp)
+```
+
+### 3.5.2. Fitting spatial point models: kernel smoothing
+Rejecting Complete Spatial Randomness (CSR) means that the observed locations in the study area do not occur at random. Accidents in Madrid may therefore form clusters, or they may simply be distributed uniformly.
+
+There are methods to model the expected density of accidents per unit of area. If the estimated densities are homogeneous, accidents would be distributed uniformly. If instead the densities vary, there are areas where accidents are concentrated.
+
+The method used here for the estimation is based on an inhomogeneous Poisson process. Specifically, we use a non-parametric method: the kernel smoothing estimator.
+
+In R, this is done with the kernel2d function from the splancs package. Besides the data to be analysed (in ppp format), it needs the optimal smoothing value "h" and the area over which the estimates will be made.
+
+First, we create the polygon that delimits the area over which the density will be estimated. It is built from the extremes of the coordinate ranges xrange and yrange.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+poli <- as.points(list(x=c(rep(min(xrange),2),rep(max(xrange),2)),y=c(min(yrange),rep(max(yrange),2),min(yrange))))
+```
+
+Next, we use the mse2d function from the splancs package to estimate the optimal value of h, which minimises the mean squared error of the kernel estimate.
+
+The mse2d function takes as arguments the accidents ppp object, the polygon that defines the estimation area, the number of iterations to perform (nsmse) and the maximum value allowed for the smoothing parameter h (range).
+
+The maximum value of the G function can serve, for example, as a guide to set the maximum search range for the smoothing parameter in mse2d().
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+G <- Gest(accidentes_ppp)
+max(G$r)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+suavizados <- mse2d(pts = as.points(accidentes_ppp),
+                    poly = poli,
+                    nsmse = 150,
+                    range = max(G$r))
+suavizados$h[which.min(suavizados$mse)]
+
+```
+
+Finally, we run kernel2d with the optimal smoothing value. The result is an object containing the grid coordinates and the estimated intensity values.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+b <- kernel2d(pts = as.points(accidentes_ppp),
+              poly = poli,
+              h0 = suavizados$h[which.min(suavizados$mse)])
+```
+
+By extracting the grid coordinates (b1, b2) and the matrix of estimated intensities (b3), we can create a 3D plot with persp showing the accident intensity surface, where the highest areas indicate a higher density of events.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+b1 <- b$x
+b2 <- b$y
+b3 <- b$z
+```
+
+## 3.6. Spatial autocorrelation analysis
+The goal of an areal data analysis is to assess whether the values of a variable (number of accidents) are spatially correlated, that is, whether similar values tend to cluster in space.
+
+### 3.6.1. Normalising the data
+For this analysis, we need to build an sf object that summarises a fair amount of information. Using st_contains(), we count how many points (accidents, red-light cameras and speed cameras) fall within each polygon (district). This tells us how many accidents, speed cameras and red-light cameras are located within each district.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Number of accidents in each district
+distritos <- st_transform(distritos, crs = 4326)
+contenidos <- st_contains(distritos, acc_sf)
+conteo_manual <- lengths(contenidos)
+
+# Add as a column
+distritos$n_acc <- conteo_manual
+
+# Number of speed cameras in each district
+contenidos <- st_contains(distritos, rad_sf)
+conteo_manual <- lengths(contenidos)
+
+# Add as a column
+distritos$n_rad <- conteo_manual
+
+# Number of red-light cameras in each district
+contenidos <- st_contains(distritos, fcr_sf)
+conteo_manual <- lengths(contenidos)
+
+# Add as a column
+distritos$n_fcr <- conteo_manual
+
+distritos$Shape_Area <- distritos$Shape_Area / 1000000
+
+distritos <- distritos %>% select(COD_DIS,NOMBRE, n_acc, n_rad, n_fcr, Shape_Area)
+```
+
+However, to compare districts, it is better to calculate the number of accidents, speed cameras or red-light cameras relative to the traffic intensity of each district.
+
+For this, we downloaded two datasets for January, February, March and April 2025. On the one hand, we have information on Madrid's traffic measurement points: their id, the district where they are located and their coordinates. On the other hand, we have a daily count of the vehicles passing each measurement point every 15 minutes.
+
+By joining the two datasets for each month, we obtain the number of vehicles passing each measurement point every 15 minutes, together with the district where each point is located. This gives us an object with the id of each measurement point, the district it belongs to and the average monthly traffic intensity per 15 minutes.
+
+To bring all the information together by district, we group this object and add up the traffic intensity of the points that belong to the same district.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# The monthly calculation (joining each measurement point with its district,
+# average traffic per point and sum per district) is done in preparar_trafico.R,
+# because the raw data take up ~3 GB. Its result is the trafico_mes object,
+# with one row per month and district.
+```
+
+At this point, we have, for each month, the sum of the average 15-minute traffic of all the measurement points in each district. To combine it with the number of accidents, speed cameras and red-light cameras per district, we calculate the average traffic intensity over the 4 months.
+
+Finally, to make the results easier to interpret, we divide the average by 15 to obtain the average traffic intensity per minute.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+med_distrito <- trafico_mes %>%
+  group_by(distrito) %>%
+  summarise(int_med_15 = mean(total))
+
+med_distrito$int_med <- (med_distrito$int_med_15)/15
+```
+
+We then join it with the rest of the data.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+med_distrito$distrito <- as.character(med_distrito$distrito)
+info_distritos <- inner_join(distritos, med_distrito, by = c("COD_DIS" = "distrito"))
+```
+
+The relative rate used in the analysis is calculated by dividing the number of accidents in each district by the sum of the average traffic intensity per minute of all the measurement points in that district. This normalises the data so we can start the spatial correlation analysis. We also calculate a relative rate for the number of speed cameras and red-light cameras, in case it is useful later on.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+info_distritos <- info_distritos %>%
+  mutate(acc_rel = n_acc/int_med, rad_rel = n_rad/int_med, fcr_rel = n_fcr/int_med)
+```
+
+### 3.6.2. Event density across areas
+To analyse the spatial distribution of traffic accidents, it is useful to build a map. In it, each district is shown as a polygon coloured by its number of accidents relative to the traffic in the area, using a colour scale where darker shades indicate higher values.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Colour palette for the rate
+paleta <- colorNumeric(palette = "YlOrRd", domain = info_distritos$acc_rel)
+
+# Create the interactive map
+accidentalidad_distr <- leaflet(data = info_distritos) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    fillColor = ~paleta(acc_rel),
+    color = "white",
+    weight = 1,
+    opacity = 1,
+    fillOpacity = 0.7,
+    highlightOptions = highlightOptions(
+      weight = 2,
+      color = "#666",
+      fillOpacity = 0.9,
+      bringToFront = TRUE
+    ),
+    popup = ~paste(NOMBRE, COD_DIS, sep = ",")
+  ) %>%
+  addLegend(
+    pal = paleta,
+    values = ~acc_rel,
+    title = "Accident rate",
+    position = "bottomright"
+  )
+```
+
+### 3.6.3. Global test of spatial autocorrelation: Moran's I
+One of the most effective measures to detect and quantify spatial autocorrelation in a geospatial dataset is Moran's I index.
+
+The index can be interpreted as follows. A value close to zero indicates no spatial autocorrelation, meaning that areas with many or few accidents are randomly distributed in space. A positive value indicates positive autocorrelation, meaning that similar values tend to be close to each other, forming clusters.
+
+The {spdep} package provides a function to calculate this index. Beforehand, we only need to compute the neighbours of each area with poly2nb() and the weights of each area with nb2listw(), that is, how strongly each unit influences the others according to their proximity or spatial connection.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+wr <- spdep::poly2nb(info_distritos, queen = FALSE, snap = 0.1)
+summary(wr)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# SIMPLIFIED CALCULATION OF MORAN'S I
+ww <- spdep::nb2listw(wr, style = "B", zero.policy = TRUE)
+
+spdep::moran(x = info_distritos$acc_rel,
+             listw = ww,
+             n = length(ww$neighbours), # n
+             S0=spdep::Szero(ww)) # smw
+```
+
+Once the index has been calculated, it is advisable to apply the global Moran test, which adds a test of statistical significance to find out whether the observed pattern could have occurred by chance. The R function for this test is moran.test().
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+spdep::moran.test(info_distritos$acc_rel, listw=ww)
+```
+
+### 3.6.4. Local test of spatial autocorrelation: LISA
+The Moran test in the previous section is useful to assess whether a dataset shows spatial autocorrelation overall, but it does not detect clusters of areas with similar values or areas that are outliers relative to their neighbours, among other things.
+
+For this, local tests of spatial autocorrelation are used, such as the Local Indicator of Spatial Association (LISA). The R function for this test is localmoran(), from the {spdep} package.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+local.moran <- spdep::localmoran(info_distritos$acc_rel, listw = ww)
+```
+
+The best way to interpret the result is to plot it.
+
+The most useful plot is the LISA map. To build it, we extract the significant areas by applying the lisa_clusters() function to the local LISA test, and then assign each one a value according to its category.
+
+Significant areas can belong to one of four categories, depending on their relative number of accidents and that of their neighbours. Each category name has two parts. The first, "high" or "low", refers to the number of accidents in the area itself. The second, also "high" or "low", refers to the relative number of accidents in the surrounding areas. For example, the "High-High" category corresponds to areas with a high accident rate surrounded by areas that also have a high rate.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+match_palette <- function(patterns, classifications, colors){
+  classes_present <- base::unique(patterns)
+  # Create a named vector that maps each classification to its colour
+  col_map <- setNames(colors, classifications)
+  # Keep only the classes present, in that order
+  pal <- unname(col_map[classes_present])
+  return(pal)
+}
+
+# Function to draw a LISA map
+lisa_map <- function(df, lisa, alpha = .05) {
+  clusters <- lisa_clusters(lisa,cutoff = alpha)
+  labels <- lisa_labels(lisa)
+  pvalue <- lisa_pvalues(lisa)
+  colors <- lisa_colors(lisa)
+  lisa_patterns <- labels[clusters+1]
+
+  pal <- match_palette(lisa_patterns,labels,colors)
+  labels <- labels[labels %in% lisa_patterns]
+
+  df["lisa_clusters"] <- clusters
+  tm_shape(df) +
+    tm_fill("lisa_clusters", labels = labels, palette = pal, style = "cat")
+}
+
+# LISA map
+w <- rgeoda::queen_weights(info_distritos)
+lisa <- local_moran(w, info_distritos["acc_rel"])
+```
+
+## 3.7. Bivariate spatial correlation analysis
+As its name suggests, the spatial (auto)correlation analysis tried to find out whether the value of a single variable in an area was similar to that of its surroundings.
+
+In this section, our goal is to detect relationships between different phenomena. For example, do areas with a high concentration of accidents also have a high density of control devices (red-light cameras or speed cameras)?
+
+This allows us to assess how effective the control measures are. For example, if accident hotspots have many speed cameras or red-light cameras, there may still be too few devices, or the existing ones may be poorly located. If, on the other hand, dangerous areas do not have enough control devices, the bivariate analysis reveals gaps in road safety coverage.
+
+For this analysis we follow a procedure very similar to the previous local Moran test, but instead of local_moran() we use local_bimoran().
+
+First, we study the relationship between accidents and the number of red-light cameras.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Bivariate LISA: relationship between accidents and the number of red-light cameras
+lisa_bv_fcr <- local_bimoran(w, info_distritos[c("acc_rel", "n_fcr")])
+```
+
+In the same way, we study the relationship between accidents and the number of speed cameras.
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Bivariate LISA: relationship between accidents and the number of speed cameras
+lisa_bv_rad <- local_bimoran(w, info_distritos[c("acc_rel", "n_rad")])
+```
+
+Here too, the results can be shown on a LISA map, which makes them easier to interpret.
+
+# 4. Results
+
+## 4.1. Complete Spatial Randomness
+After trying several geocoding methods, ArcGIS proved the most accurate, finding geographic coordinates for all 22 observations with missing coordinates.
+
+```{r,error=FALSE,message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+gacc + plot_spacer() + grad + plot_spacer() + gfcr + plot_layout(widths = c(1, 0.05, 1, 0.05, 1))
+```
+
+The plot shows that there are no observations outside the expected area, so no intersection is needed.
+
+```{r,error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Heat map showing the distribution of accidents together with speed cameras and red-light cameras
+g1 | g2
+```
+
+In this plot, the areas with the highest concentration of accidents are shown in colours ranging from green to yellow, while purple shades correspond to areas with a lower density. Red dots show the locations of red-light cameras and black dots those of speed cameras.
+
+The plot suggests that accidents tend to concentrate in certain areas. As for speed cameras and red-light cameras, most of them are located in purple areas, where accident density is not high. This may not be a coincidence, but a possible effect of the control these devices exert.
+
+At first sight, the map seems to contradict the hypothesis of spatial randomness. If accidents followed a Complete Spatial Randomness (CSR) pattern, we would see a more homogeneous distribution, without notable concentrations in space.
+
+The plot of the new ppp object reinforces the conclusion of the geographic distribution analysis, since the points are not spread evenly across the square. The points therefore seem to cluster in a non-random way.
+
+```{r,error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+plot(accidentes_ppp, main="Traffic accidents", axes = T)
+```
+
+To see whether the difference between the theoretical model and the observed data is significant, we plot the envelope with the plot() function.
+
+```{r,error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+plot(env_acc)
+```
+
+This confirms that the difference is significant: the points are not randomly distributed but tend to concentrate in specific areas.
+
+Ripley's K test reinforces the evidence of a marked difference between the theoretical curve (Poisson) and the estimated "border" curve (border method or "reduced sample" estimator).
+
+```{r,error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+plot(K)
+```
+
+Plotting the accident intensity surface confirms that there are higher areas, which indicate a greater density of events.
+
+```{r,error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+par(mar=c(2,2,1,2))
+persp(b1, b2, b3,
+      theta = 45, phi = 30, ltheta = 120, shade = 0.75,
+      expand = 0.5, col = "aquamarine", ticktype="detailed",
+      xlab = "", ylab = "", zlab = "", main = "Intensity")
+```
+
+
+## 4.2. Spatial autocorrelation analysis
+The following map shows, for each district, the ratio between the number of accidents and the average traffic per minute of all its measurement points.
+
+```{r, error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+accidentalidad_distr
+```
+
+The number of accidents differs considerably between some areas. In addition, districts with similar values seem to cluster together in space. For example, the south-east of the study area concentrates districts with a high accident rate, while low rates predominate in the rest.
+
+However, this kind of map cannot establish whether spatial autocorrelation is statistically significant. Specific tests, such as Moran's I, are needed for that.
+
+```{r, error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# SIMPLIFIED CALCULATION OF MORAN'S I
+ww <- spdep::nb2listw(wr, style = "B", zero.policy = TRUE)
+
+spdep::moran(x = info_distritos$acc_rel,
+             listw = ww,
+             n = length(ww$neighbours), # n
+             S0=spdep::Szero(ww)) # smw
+```
+
+```{r, error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE, results='hide'}
+# Store the global Moran test so its values can be quoted in the text
+moran_res <- spdep::moran.test(info_distritos$acc_rel, listw=ww)
+```
+
+Moran's I is `r round(moran_res$estimate[["Moran I statistic"]], 4)`. This indicates moderate positive spatial autocorrelation: neighbouring districts tend to have a similar relative number of accidents.
+
+But how statistically significant is this spatial autocorrelation? To answer this question, we apply the global Moran test. It is based on Moran's I, but adds a test of statistical significance to find out whether the observed pattern could have occurred by chance.
+
+```{r, error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+moran_res
+```
+
+The global Moran test gives a p-value of `r format(round(moran_res$p.value, 3), nsmall = 3)`, which is very low and allows us to reject the null hypothesis of no spatial autocorrelation. In addition, the Z statistic of `r round(moran_res$statistic, 2)` shows that the difference between the observed value and the value expected under randomness is statistically significant, exceeding twice the standard deviation.
+
+We therefore confirm that there is significant spatial autocorrelation, but we do not yet know which clusters of areas share similar values, or which areas are outliers relative to their neighbours.
+
+To find out, we carried out a local test of spatial autocorrelation. We assess its results visually, through the LISA map.
+
+```{r, error=FALSE, message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+lisa_map(info_distritos, lisa) +
+  tm_borders() +
+  tm_layout(title = "Local Moran Cluster Map of Accident Rate",legend.outside = TRUE)
+```
+
+In the context of our analysis, we highlight two types of areas where public policy should focus. First, areas belonging to "High-High" clusters, since they indicate dangerous zones. Second, "High-Low" areas, which represent a problem spot in an apparently safe environment and, although isolated, require attention. In short, all areas with a significant number of accidents, regardless of the values of the areas around them.
+
+The map identifies the following districts as High-High areas: Puente de Vallecas (13), Villaverde (17) and Villa de Vallecas (18). The only High-Low area is Centro (1).
+
+We therefore obtain 4 critical areas. Next, we analyse the relationship between the number of accidents and prevention devices, to find out whether the main reason these areas accumulate so many accidents is a lack of these safety devices.
+
+## 4.3. Bivariate spatial correlation analysis
+The following map analyses, within the same area, the relationship between the number of accidents and the number of red-light cameras.
+
+```{r,error=FALSE,message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Clusters and labels
+clusters_bv_fcr <- lisa_clusters(lisa_bv_fcr)
+labels_bv_fcr <- lisa_labels(lisa_bv_fcr)
+colors_bv_fcr <- c(
+  "Not significant" = "#D3D3D3",
+  "High-High" = "#E41A1C",
+  "Low-Low" = "#377EB8",
+  "High-Low" = "#FF7F00",
+  "Low-High" = "#4DAF4A" )
+
+
+# Add to the sf object
+info_distritos$lisa_bv_cluster_fcr <- labels_bv_fcr[clusters_bv_fcr + 1]
+
+# Plot
+tm_shape(info_distritos) +
+  tm_fill("lisa_bv_cluster_fcr", palette = colors_bv_fcr, title = "Bivariate LISA\n(Accidents ~ Red-light cameras)") +
+  tm_borders() +
+  tm_layout(legend.outside = TRUE)
+```
+
+Regarding red-light cameras, Villaverde, Villa de Vallecas and Vicálvaro have a significantly low number of red-light cameras relative to their number of accidents. These areas had been identified as critical by the local Moran test, so we can state that one of the reasons these districts have such a high number of accidents relative to their traffic is the lack of red-light cameras.
+
+Furthermore, we found no area combining a high accident rate with a high concentration of red-light cameras, but we did find areas where both variables are significantly low. This supports the idea that the devices are effective once installed.
+
+On the other hand, Usera stands out as a district with few red-light cameras, although its number of accidents is also low. It does not require attention at the moment, but if its accidents increase relative to its traffic in the future, installing more control devices like these would be one possible policy.
+
+```{r,error=FALSE,message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Clusters and labels
+clusters_bv_rad <- lisa_clusters(lisa_bv_rad)
+labels_bv_rad <- lisa_labels(lisa_bv_rad)
+colors_bv_rad <- c(
+  "Not significant" = "#D3D3D3",
+  "High-High" = "#E41A1C",
+  "Low-Low" = "#377EB8",
+  "High-Low" = "#FF7F00",
+  "Low-High" = "#4DAF4A" )
+
+
+# Add to the sf object
+info_distritos$lisa_bv_cluster_rad <- labels_bv_rad[clusters_bv_rad + 1]
+
+# Plot
+tm_shape(info_distritos) +
+  tm_fill("lisa_bv_cluster_rad", palette = colors_bv_rad, title = "Bivariate LISA\n(Accidents ~ Speed cameras)") +
+  tm_borders() +
+  tm_layout(legend.outside = TRUE)
+```
+
+As for speed cameras, we found that Centro, a critical district because of its accident rate, has a significantly high number of speed cameras. This may suggest that the speed cameras have not been effective, either because they are not located on the most dangerous stretches, because of poor urban design or because of a lack of safe infrastructure. We therefore cannot claim that the high number of accidents relative to traffic in Centro is due to a shortage of speed cameras.
+
+In the case of Barajas, however, a lack of speed cameras may be one of the reasons for its high number of accidents given its traffic intensity. This district had not been classified as critical in the first local Moran test, because it is surrounded by areas with different values and was therefore not detected as part of a significant cluster. However, the bivariate analysis shows that, although its accident rate does not stand out compared with its neighbours, it is significantly high relative to the number of speed cameras installed.
+
+Finally, San Blas - Canillejas was classified as an area with a significantly low number of speed cameras, although its number of accidents is also low. It does not require attention either, but installing more control devices like these would be one possible future policy if its accidents increase relative to its traffic.
+
+
+# 5. Conclusions
+At the end of the study, we can draw some conclusions about the potential of the method used.
+
+First, if geographic information is available on some of the road safety systems installed in a city, statistical tests can be used to investigate the relationship between the number of accidents and the number of devices of a given system within the same area. This makes it possible to identify which safety systems have little presence in critical areas and to point to a shortage of devices as a cause of the high number of accidents. It also makes it possible to check whether areas that are well equipped with a given safety system have a low number of accidents, which would confirm the effectiveness of that system.
+
+Conversely, if there are areas with a high presence of a certain type of safety device but the number of accidents remains significantly high, this suggests that the control system is not effective.
+
+In short, this study has allowed us to assess the effectiveness of specific road control systems and whether their absence is the reason why such a high number of accidents was concentrated in the critical areas.
+
+In this case, we could only carry out the analysis for red-light cameras and speed cameras. The aim of the project is therefore to show that the method can serve as a basis for more in-depth future studies, with data on other types of road control systems.
+
+# 6. Appendix
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Libraries
+libs <- c("readxl", "readr", "tidyverse", "tidygeocoder", "sf", "spanishoddata","ggplot2", "ggspatial", "osmdata", "mapSpain", "patchwork","spatstat","sp", "splancs", "leaflet", "rgeoda", "spdep", "tmap", "RColorBrewer")
+installed_libs <- libs %in% rownames(installed.packages())
+if (any(installed_libs == F)) {install.packages(libs[!installed_libs])}
+invisible(lapply(libs, library, character.only = T))
+rm(libs, installed_libs)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Load the data
+## Traffic accidents in Madrid during January, February, March and April 2025
+acc <- read_xlsx("./principales/accidentes25.xlsx")
+
+# Speed cameras
+rad <- read_xlsx("./principales/radares.xlsx")
+
+# Red-light cameras
+fcr <- read_xlsx("./principales/foto_rojo.xlsx")
+
+# Districts
+distritos <- st_read("./distritos/DISTRITOS.shp")
+
+## Traffic intensity by district and month (January-April 2025)
+## Summary generated with preparar_trafico.R from the raw data (~3 GB)
+trafico_mes <- read_csv("./trafico/trafico_distrito_mes.csv",
+                        col_types = cols(mes = col_character(), distrito = col_character()))
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Before converting the data to sf, check for observations with missing coordinates
+sum(is.na(acc$coordenada_x_utm))
+sum(is.na(acc$coordenada_y_utm))
+
+sum(is.na(rad$Latitud))
+sum(is.na(rad$Longitud))
+
+sum(is.na(fcr$longitud))
+sum(is.na(fcr$latitud))
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Remove these observations from the dataset to handle them separately
+acc_full <- acc %>%  filter(!is.na(coordenada_x_utm) | !is.na(coordenada_y_utm))
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Filter them and assign coordinates through geocoding
+na <- acc %>% filter(is.na(coordenada_x_utm) |
+                         is.na(coordenada_y_utm)) %>%
+  mutate(info = paste(localizacion," Madrid", sep = ","))
+
+na_geocoded <- geocode(na, address = info, method = "arcgis")
+
+na_ok <- na_geocoded %>% mutate(coordenada_x_utm = long, coordenada_y_utm = lat) %>% filter(!is.na(long) | !is.na(lat)) %>% select(!c(lat,long,info))
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Convert all datasets to sf format
+acc_full$coordenada_x_utm <- as.numeric(acc_full$coordenada_x_utm)
+acc_full$coordenada_y_utm <- as.numeric(acc_full$coordenada_y_utm)
+acc_full_sf <- st_as_sf(acc_full, coords = c("coordenada_x_utm", "coordenada_y_utm"), crs = 25830)
+acc_full_sf <- st_transform(acc_full_sf, crs = 4326)
+
+na_ok$coordenada_x_utm <- as.numeric(na_ok$coordenada_x_utm)
+na_ok$coordenada_y_utm <- as.numeric(na_ok$coordenada_y_utm)
+na_ok_sf <- st_as_sf(na_ok, coords = c("coordenada_x_utm", "coordenada_y_utm"), crs = 4326)   # (4326 because geocoding returns latitude and longitude)
+
+rad_sf <- st_as_sf(rad, coords = c("Longitud", "Latitud"), crs = 4326)
+
+fcr_sf <- st_as_sf(fcr, coords = c("longitud", "latitud"), crs = 4326)
+
+# Combine the observations of the two accident sf objects
+acc_sf <- rbind(acc_full_sf, na_ok_sf)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Accidents plot
+gacc <- ggplot() +
+  annotation_map_tile(type = "osm") +
+  geom_sf(data = acc_sf, aes(color = "Accidents"), size = 0.01, alpha = 0.7) +
+  scale_color_manual(values = "red") +
+  labs(title = "Accidents", color = NULL) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+
+# Speed cameras plot
+grad <- ggplot() +
+  annotation_map_tile(type = "osm") +
+  geom_sf(data = rad_sf, aes(color = "Speed cameras"), size = 0.5, alpha = 0.8) +
+  scale_color_manual(values = "blue") +
+  labs(title = "Speed cameras", color = NULL) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+
+# Red-light cameras plot
+gfcr <- ggplot() +
+  annotation_map_tile(type = "osm") +
+  geom_sf(data = fcr_sf, aes(color = "Red-light cameras"), size = 0.5, alpha = 0.8) +
+  scale_color_manual(values = "darkgreen") +
+  labs(title = "Red-light cameras", color = NULL) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+gacc + plot_spacer() + grad + plot_spacer() + gfcr + plot_layout(widths = c(1, 0.05, 1, 0.05, 1))
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, echo=FALSE}
+# Heat map showing the distribution of accidents together with speed cameras and red-light cameras
+g1 <- ggplot() +
+  stat_density_2d(data = st_coordinates(acc_sf) %>% as.data.frame(),
+                  aes(X, Y, fill = after_stat(level)), geom = "polygon", alpha = 0.6) +
+  scale_fill_viridis_c() +
+  geom_sf(data = acc_sf, color = "black", size = 0.0, alpha = 0.0) +
+  geom_sf(data = rad_sf, color = "black", size = 1.5, shape = 16, alpha = 0.8) +  # Speed camera points
+  geom_sf(data = fcr_sf, color = "red", size = 1.5, shape = 16, alpha = 0.8) +  # Red-light camera points
+  labs(title = "Accident heat map",
+       subtitle = "Areas with the highest density of events",
+       fill = "Density") +
+  theme_minimal()
+
+# Base map from OpenStreetMap
+g2 <- ggplot() +
+  geom_sf(data = acc_sf, color = "black", size = 0.0, alpha = 0.0) +
+  annotation_map_tile(type = "osm")
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Heat map showing the distribution of accidents together with speed cameras and red-light cameras
+g1 | g2
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+acc_sf_csr <- st_transform(acc_sf, crs = 25830)
+accidentes_sp <- as_Spatial(acc_sf_csr)
+
+coords_unique <- unique(coordinates(accidentes_sp))
+
+xrange = range(coords_unique[,1])
+yrange = range(coords_unique[,2])
+W = owin(xrange = xrange, yrange = yrange)
+
+accidentes_ppp <- as.ppp(coords_unique, W = W)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+plot(accidentes_ppp, main="Traffic accidents", axes = T)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+env_acc <- envelope(accidentes_ppp, fun=Gest, nsim=100,nrank = 2, verbose = F)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+plot(env_acc)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+K <- Kest(accidentes_ppp)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+plot(K)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+poli <- as.points(list(x=c(rep(min(xrange),2),rep(max(xrange),2)),y=c(min(yrange),rep(max(yrange),2),min(yrange))))
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+G <- Gest(accidentes_ppp)
+max(G$r)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+suavizados <- mse2d(pts = as.points(accidentes_ppp),
+                    poly = poli,
+                    nsmse = 150,
+                    range = max(G$r))
+suavizados$h[which.min(suavizados$mse)]
+
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+b <- kernel2d(pts = as.points(accidentes_ppp),
+              poly = poli,
+              h0 = suavizados$h[which.min(suavizados$mse)])
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+b1 <- b$x
+b2 <- b$y
+b3 <- b$z
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+par(mar=c(2,2,1,2))
+persp(b1, b2, b3,
+      theta = 45, phi = 30, ltheta = 120, shade = 0.75,
+      expand = 0.5, col = "aquamarine", ticktype="detailed",
+      xlab = "", ylab = "", zlab = "", main = "Intensity")
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Number of accidents in each district
+distritos <- st_transform(distritos, crs = 4326)
+contenidos <- st_contains(distritos, acc_sf)
+conteo_manual <- lengths(contenidos)
+
+# Add as a column
+distritos$n_acc <- conteo_manual
+
+# Number of speed cameras in each district
+contenidos <- st_contains(distritos, rad_sf)
+conteo_manual <- lengths(contenidos)
+
+# Add as a column
+distritos$n_rad <- conteo_manual
+
+# Number of red-light cameras in each district
+contenidos <- st_contains(distritos, fcr_sf)
+conteo_manual <- lengths(contenidos)
+
+# Add as a column
+distritos$n_fcr <- conteo_manual
+
+distritos$Shape_Area <- distritos$Shape_Area / 1000000
+
+distritos <- distritos %>% select(COD_DIS,NOMBRE, n_acc, n_rad, n_fcr, Shape_Area)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# The monthly calculation (joining each measurement point with its district,
+# average traffic per point and sum per district) is done in preparar_trafico.R,
+# because the raw data take up ~3 GB. Its result is the trafico_mes object,
+# with one row per month and district.
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+med_distrito <- trafico_mes %>%
+  group_by(distrito) %>%
+  summarise(int_med_15 = mean(total))
+
+med_distrito$int_med <- (med_distrito$int_med_15)/15
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+med_distrito$distrito <- as.character(med_distrito$distrito)
+info_distritos <- inner_join(distritos, med_distrito, by = c("COD_DIS" = "distrito"))
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+info_distritos <- info_distritos %>%
+  mutate(acc_rel = n_acc/int_med, rad_rel = n_rad/int_med, fcr_rel = n_fcr/int_med)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Colour palette for the rate
+paleta <- colorNumeric(palette = "YlOrRd", domain = info_distritos$acc_rel)
+
+# Create the interactive map
+accidentalidad_distr <- leaflet(data = info_distritos) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    fillColor = ~paleta(acc_rel),
+    color = "white",
+    weight = 1,
+    opacity = 1,
+    fillOpacity = 0.7,
+    highlightOptions = highlightOptions(
+      weight = 2,
+      color = "#666",
+      fillOpacity = 0.9,
+      bringToFront = TRUE
+    ),
+    popup = ~paste(NOMBRE, COD_DIS, sep = ",")
+  ) %>%
+  addLegend(
+    pal = paleta,
+    values = ~acc_rel,
+    title = "Accident rate",
+    position = "bottomright"
+  )
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+accidentalidad_distr
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+wr <- spdep::poly2nb(info_distritos, queen = FALSE, snap = 0.1)
+summary(wr)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# SIMPLIFIED CALCULATION OF MORAN'S I
+ww <- spdep::nb2listw(wr, style = "B", zero.policy = TRUE)
+
+spdep::moran(x = info_distritos$acc_rel,
+             listw = ww,
+             n = length(ww$neighbours), # n
+             S0=spdep::Szero(ww)) # smw
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+spdep::moran.test(info_distritos$acc_rel, listw=ww)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+local.moran <- spdep::localmoran(info_distritos$acc_rel, listw = ww)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+match_palette <- function(patterns, classifications, colors){
+  classes_present <- base::unique(patterns)
+  # Create a named vector that maps each classification to its colour
+  col_map <- setNames(colors, classifications)
+  # Keep only the classes present, in that order
+  pal <- unname(col_map[classes_present])
+  return(pal)
+}
+
+# Function to draw a LISA map
+lisa_map <- function(df, lisa, alpha = .05) {
+  clusters <- lisa_clusters(lisa,cutoff = alpha)
+  labels <- lisa_labels(lisa)
+  pvalue <- lisa_pvalues(lisa)
+  colors <- lisa_colors(lisa)
+  lisa_patterns <- labels[clusters+1]
+
+  pal <- match_palette(lisa_patterns,labels,colors)
+  labels <- labels[labels %in% lisa_patterns]
+
+  df["lisa_clusters"] <- clusters
+  tm_shape(df) +
+    tm_fill("lisa_clusters", labels = labels, palette = pal, style = "cat")
+}
+
+# LISA map
+w <- rgeoda::queen_weights(info_distritos)
+lisa <- local_moran(w, info_distritos["acc_rel"])
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+lisa_map(info_distritos, lisa) +
+  tm_borders() +
+  tm_layout(title = "Local Moran Cluster Map of Accident Rate",legend.outside = TRUE)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Bivariate LISA: relationship between accidents and the number of red-light cameras
+lisa_bv_fcr <- local_bimoran(w, info_distritos[c("acc_rel", "n_fcr")])
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Clusters and labels
+clusters_bv_fcr <- lisa_clusters(lisa_bv_fcr)
+labels_bv_fcr <- lisa_labels(lisa_bv_fcr)
+colors_bv_fcr <- c(
+  "Not significant" = "#D3D3D3",
+  "High-High" = "#E41A1C",
+  "Low-Low" = "#377EB8",
+  "High-Low" = "#FF7F00",
+  "Low-High" = "#4DAF4A" )
+
+
+# Add to the sf object
+info_distritos$lisa_bv_cluster_fcr <- labels_bv_fcr[clusters_bv_fcr + 1]
+
+# Plot
+tm_shape(info_distritos) +
+  tm_fill("lisa_bv_cluster_fcr", palette = colors_bv_fcr, title = "Bivariate LISA\n(Accidents ~ Red-light cameras)") +
+  tm_borders() +
+  tm_layout(legend.outside = TRUE)
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Bivariate LISA: relationship between accidents and the number of speed cameras
+lisa_bv_rad <- local_bimoran(w, info_distritos[c("acc_rel", "n_rad")])
+```
+
+```{r, error=FALSE,results='hide', message=FALSE, cache=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+# Clusters and labels
+clusters_bv_rad <- lisa_clusters(lisa_bv_rad)
+labels_bv_rad <- lisa_labels(lisa_bv_rad)
+colors_bv_rad <- c(
+  "Not significant" = "#D3D3D3",
+  "High-High" = "#E41A1C",
+  "Low-Low" = "#377EB8",
+  "High-Low" = "#FF7F00",
+  "Low-High" = "#4DAF4A" )
+
+
+# Add to the sf object
+info_distritos$lisa_bv_cluster_rad <- labels_bv_rad[clusters_bv_rad + 1]
+
+# Plot
+tm_shape(info_distritos) +
+  tm_fill("lisa_bv_cluster_rad", palette = colors_bv_rad, title = "Bivariate LISA\n(Accidents ~ Speed cameras)") +
+  tm_borders() +
+  tm_layout(legend.outside = TRUE)
+```

@@ -5,7 +5,7 @@ Proyecto final · Datos Espaciales y Espaciotemporales · Grado en Business Inte
 
 🇬🇧 [English version](README.md)
 
-📄 **[Leer el informe completo (PDF)](informe.pdf)**
+📄 **Informe completo:** [español, versión entregada (PDF)](informe.pdf) · [inglés (PDF)](informe_en.pdf)
 
 ---
 
@@ -21,7 +21,7 @@ El análisis tiene dos partes:
 ## Resultados principales
 
 - Los accidentes **no se distribuyen al azar**: se rechaza la aleatoriedad espacial completa (CSR) con envolventes de la función G y la K de Ripley.
-- Los accidentes relativos al tráfico presentan **autocorrelación espacial positiva y significativa** (I de Moran = 0,21; p = 0,007).
+- Los accidentes relativos al tráfico presentan **autocorrelación espacial positiva y significativa** (I de Moran ≈ 0,22; p < 0,01).
 - El **LISA** identifica cuatro distritos críticos: Puente de Vallecas, Villaverde y Villa de Vallecas (clúster *High-High*) y Centro (*High-Low*).
 - El **LISA bivariado** muestra que Villaverde, Villa de Vallecas y Vicálvaro combinan una tasa alta de accidentes con un número significativamente bajo de semáforos con foto-rojo. En cambio, Centro tiene muchos radares y aun así una tasa alta, lo que sugiere que su ubicación podría mejorarse.
 
@@ -39,6 +39,8 @@ El análisis tiene dos partes:
 ```
 ├── informe.qmd              # Análisis completo (Quarto): código + informe
 ├── informe.pdf              # Informe entregado
+├── informe_en.qmd           # Versión en inglés del informe
+├── informe_en.pdf           # Informe en inglés
 ├── preparar_trafico.R       # Resume los datos brutos de tráfico (~3 GB) por distrito y mes
 ├── principales/             # Accidentes, radares y semáforos con foto-rojo (Excel)
 ├── distritos/               # Límites de los distritos (shapefile)

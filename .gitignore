@@ -11,6 +11,7 @@ rosm.cache/
 
 # --- Salidas generadas al renderizar ---
 informe.html
+informe_en.html
 informe_files/
 *_cache/
 

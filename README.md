@@ -5,7 +5,7 @@ Final project · Spatial and Spatio-temporal Data · BSc in Business Intelligenc
 
 🇪🇸 [Versión en español](README.es.md)
 
-📄 **[Read the full report (PDF, in Spanish)](informe.pdf)**
+📄 **Full report:** [English (PDF)](informe_en.pdf) · [Spanish, as submitted (PDF)](informe.pdf)
 
 ---
 
@@ -21,7 +21,7 @@ The analysis is done in two stages:
 ## Key findings
 
 - Accidents are **not randomly distributed** (Complete Spatial Randomness is rejected using G-function envelopes and Ripley's K).
-- Accidents relative to traffic show **significant positive spatial autocorrelation** (Moran's I = 0.21, p = 0.007).
+- Accidents relative to traffic show **significant positive spatial autocorrelation** (Moran's I ≈ 0.22, p < 0.01).
 - **LISA** identifies four critical districts: Puente de Vallecas, Villaverde and Villa de Vallecas (*High-High* cluster) and Centro (*High-Low*).
 - **Bivariate LISA** shows that Villaverde, Villa de Vallecas and Vicálvaro combine a high accident rate with a significantly low number of red-light cameras. Centro, on the other hand, has many speed cameras and still a high accident rate, which suggests that their placement could be improved.
 
@@ -37,8 +37,10 @@ The analysis is done in two stages:
 ## Repository structure
 
 ```
-├── informe.qmd              # Full analysis (Quarto): code + report
-├── informe.pdf              # Report as submitted
+├── informe_en.qmd           # Full analysis (Quarto): code + report, in English
+├── informe_en.pdf           # Report in English
+├── informe.qmd              # Original report in Spanish
+├── informe.pdf              # Report as submitted (Spanish)
 ├── preparar_trafico.R       # Summarises the raw traffic data (~3 GB) by district and month
 ├── principales/             # Accidents, speed cameras and red-light cameras (Excel)
 ├── distritos/               # District boundaries (shapefile)
@@ -51,7 +53,7 @@ The analysis is done in two stages:
 ## How to run it
 
 1. Install [R](https://cran.r-project.org/) and [Quarto](https://quarto.org/) (included in RStudio).
-2. Open `informe.qmd` in RStudio and click **Render**. Missing packages are installed automatically the first time.
+2. Open `informe_en.qmd` (or `informe.qmd` for Spanish) in RStudio and click **Render**. Missing packages are installed automatically the first time.
 
 An internet connection is needed to geocode accidents with missing coordinates and to download the base maps.
 
